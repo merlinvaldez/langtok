@@ -2,7 +2,7 @@
 
 LangTok is a React learning project for experimenting with browser-local AI for language learning. The app is designed as a short-form, TikTok-like feed where learners choose a target language, scroll through vocabulary and phrase cards, save useful items to a Word Wall, and eventually hear pronunciation from local browser-side text-to-speech models.
 
-This repository currently contains the first implementation milestone: a static product skeleton for the For You feed.
+This repository currently contains the second implementation milestone: a static feed with saved-card persistence and a Word Wall.
 
 ## Current Features
 
@@ -10,8 +10,9 @@ This repository currently contains the first implementation milestone: a static 
 - Mobile-first vertical feed with full-screen scroll snapping.
 - Language dropdown for Spanish, French, German, and English.
 - Static vocabulary and phrase cards.
-- Card fields for target text, English meaning, example sentence, example translation, phonetic spelling, and topic tags.
-- Save and unsave interaction with an in-memory saved count.
+- Minimal cards with target text, English meaning, phonetic spelling, example sentence, and example translation.
+- Save and unsave interaction backed by `localStorage`.
+- Word Wall view with saved cards sorted alphabetically by target text.
 - Placeholder audio button for the future local TTS milestone.
 
 ## Planned Learning Milestones

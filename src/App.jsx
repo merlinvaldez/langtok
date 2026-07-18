@@ -1,120 +1,43 @@
-import { Bookmark, BookmarkCheck, Grid2X2, Languages, Volume2 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { ArrowLeft, Bookmark, BookmarkCheck, Grid2X2, Languages, Volume2 } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { LANGUAGES, SAMPLE_CARDS } from "./data.js";
 
-const LANGUAGES = [
-  { label: "Spanish", code: "es" },
-  { label: "French", code: "fr" },
-  { label: "German", code: "de" },
-  { label: "English", code: "en" },
-];
+const SAVED_CARD_IDS_STORAGE_KEY = "langtok:savedCardIds";
 
-const SAMPLE_CARDS = [
-  {
-    id: "es-todavia",
-    language: "Spanish",
-    languageCode: "es",
-    type: "word",
-    targetText: "todavia",
-    translation: "still / yet",
-    phoneticSpelling: "toh-dah-VEE-ah",
-    example: "Todavia estoy aprendiendo.",
-    exampleTranslation: "I am still learning.",
-    tags: ["daily life", "adverb"],
-  },
-  {
-    id: "es-me-da-igual",
-    language: "Spanish",
-    languageCode: "es",
-    type: "phrase",
-    targetText: "me da igual",
-    translation: "it does not matter to me",
-    phoneticSpelling: "meh dah ee-GWAHL",
-    example: "Me da igual si caminamos o tomamos el bus.",
-    exampleTranslation: "It does not matter to me if we walk or take the bus.",
-    tags: ["conversation", "opinion"],
-  },
-  {
-    id: "fr-bientot",
-    language: "French",
-    languageCode: "fr",
-    type: "word",
-    targetText: "bientot",
-    translation: "soon",
-    phoneticSpelling: "byen-TOH",
-    example: "Le train arrive bientot.",
-    exampleTranslation: "The train is arriving soon.",
-    tags: ["time", "travel"],
-  },
-  {
-    id: "fr-ca-marche",
-    language: "French",
-    languageCode: "fr",
-    type: "phrase",
-    targetText: "ca marche",
-    translation: "that works / okay",
-    phoneticSpelling: "sah marsh",
-    example: "On se voit a huit heures ? Ca marche.",
-    exampleTranslation: "We meet at eight? That works.",
-    tags: ["conversation", "agreement"],
-  },
-  {
-    id: "de-genau",
-    language: "German",
-    languageCode: "de",
-    type: "word",
-    targetText: "genau",
-    translation: "exactly",
-    phoneticSpelling: "guh-NOW",
-    example: "Genau, das habe ich gemeint.",
-    exampleTranslation: "Exactly, that is what I meant.",
-    tags: ["conversation", "clarity"],
-  },
-  {
-    id: "de-keine-sorge",
-    language: "German",
-    languageCode: "de",
-    type: "phrase",
-    targetText: "keine Sorge",
-    translation: "do not worry",
-    phoneticSpelling: "KAI-nuh ZOR-guh",
-    example: "Keine Sorge, ich helfe dir.",
-    exampleTranslation: "Do not worry, I will help you.",
-    tags: ["reassurance", "daily life"],
-  },
-  {
-    id: "en-by-the-way",
-    language: "English",
-    languageCode: "en",
-    type: "phrase",
-    targetText: "by the way",
-    translation: "used to add a related thought",
-    phoneticSpelling: "bye thuh way",
-    example: "By the way, your pronunciation is improving.",
-    exampleTranslation: "By the way, your pronunciation is improving.",
-    tags: ["conversation", "transition"],
-  },
-  {
-    id: "en-gradually",
-    language: "English",
-    languageCode: "en",
-    type: "word",
-    targetText: "gradually",
-    translation: "slowly over time",
-    phoneticSpelling: "GRA-joo-uh-lee",
-    example: "You will gradually remember more words.",
-    exampleTranslation: "You will gradually remember more words.",
-    tags: ["learning", "time"],
-  },
-];
+function loadSavedCardIds() {
+  try {
+    const savedValue = window.localStorage.getItem(SAVED_CARD_IDS_STORAGE_KEY);
+    const parsedValue = savedValue ? JSON.parse(savedValue) : [];
+
+    return Array.isArray(parsedValue) ? parsedValue.filter(Boolean) : [];
+  } catch {
+    return [];
+  }
+}
 
 function App() {
   const [selectedLanguage, setSelectedLanguage] = useState("es");
-  const [savedCardIds, setSavedCardIds] = useState([]);
+  const [savedCardIds, setSavedCardIds] = useState(loadSavedCardIds);
+  const [activeView, setActiveView] = useState("feed");
 
   const visibleCards = useMemo(
     () => SAMPLE_CARDS.filter((card) => card.languageCode === selectedLanguage),
     [selectedLanguage],
   );
+
+  const savedCards = useMemo(() => {
+    const savedIds = new Set(savedCardIds);
+
+    return SAMPLE_CARDS.filter((card) => savedIds.has(card.id)).sort((firstCard, secondCard) =>
+      firstCard.targetText.localeCompare(secondCard.targetText, undefined, {
+        sensitivity: "base",
+      }),
+    );
+  }, [savedCardIds]);
+
+  useEffect(() => {
+    window.localStorage.setItem(SAVED_CARD_IDS_STORAGE_KEY, JSON.stringify(savedCardIds));
+  }, [savedCardIds]);
 
   function toggleSaved(cardId) {
     setSavedCardIds((currentIds) =>
@@ -127,10 +50,7 @@ function App() {
   return (
     <main className="app-shell">
       <header className="top-bar" aria-label="LangTok controls">
-        <div>
-          <p className="eyebrow">Browser-local language lab</p>
-          <h1>LangTok</h1>
-        </div>
+        <h1>LangTok</h1>
 
         <div className="header-actions">
           <label className="language-picker">
@@ -148,41 +68,44 @@ function App() {
             </select>
           </label>
 
-          <button className="word-wall-button" type="button" aria-label="Open Word Wall">
+          <button
+            className="word-wall-button"
+            type="button"
+            aria-label="Open Word Wall"
+            onClick={() => setActiveView("wordWall")}
+          >
             <Grid2X2 aria-hidden="true" size={18} />
-            <span>{savedCardIds.length}</span>
+            <span>{savedCards.length}</span>
           </button>
         </div>
       </header>
 
-      <section className="feed" aria-label="For You language feed">
-        {visibleCards.map((card, index) => (
-          <LanguageCard
-            card={card}
-            isSaved={savedCardIds.includes(card.id)}
-            key={card.id}
-            onToggleSaved={toggleSaved}
-            position={index + 1}
-            total={visibleCards.length}
-          />
-        ))}
-      </section>
+      {activeView === "feed" ? (
+        <section className="feed" aria-label="For You language feed">
+          {visibleCards.map((card) => (
+            <LanguageCard
+              card={card}
+              isSaved={savedCardIds.includes(card.id)}
+              key={card.id}
+              onToggleSaved={toggleSaved}
+            />
+          ))}
+        </section>
+      ) : (
+        <WordWall
+          savedCards={savedCards}
+          onBackToFeed={() => setActiveView("feed")}
+          onToggleSaved={toggleSaved}
+        />
+      )}
     </main>
   );
 }
 
-function LanguageCard({ card, isSaved, onToggleSaved, position, total }) {
+function LanguageCard({ card, isSaved, onToggleSaved }) {
   return (
     <article className="language-card">
       <div className="card-content">
-        <div className="card-meta">
-          <span>{card.language}</span>
-          <span>{card.type}</span>
-          <span>
-            {position}/{total}
-          </span>
-        </div>
-
         <div className="phrase-block">
           <p className="target-text">{card.targetText}</p>
           <p className="translation">{card.translation}</p>
@@ -202,12 +125,6 @@ function LanguageCard({ card, isSaved, onToggleSaved, position, total }) {
             <dd>{card.exampleTranslation}</dd>
           </div>
         </dl>
-
-        <ul className="tag-list" aria-label="Topics">
-          {card.tags.map((tag) => (
-            <li key={tag}>{tag}</li>
-          ))}
-        </ul>
       </div>
 
       <div className="card-actions" aria-label={`${card.targetText} actions`}>
@@ -228,6 +145,72 @@ function LanguageCard({ card, isSaved, onToggleSaved, position, total }) {
         </button>
       </div>
     </article>
+  );
+}
+
+function WordWall({ savedCards, onBackToFeed, onToggleSaved }) {
+  return (
+    <section className="word-wall" aria-label="Saved Word Wall">
+      <div className="word-wall-inner">
+        <div className="word-wall-header">
+          <button className="back-button" type="button" onClick={onBackToFeed}>
+            <ArrowLeft aria-hidden="true" size={18} />
+            <span>Feed</span>
+          </button>
+
+          <div>
+            <h2>Word Wall</h2>
+          </div>
+        </div>
+
+        {savedCards.length === 0 ? (
+          <div className="empty-state">
+            <h3>No saved cards yet</h3>
+            <p>Save words and phrases from the feed to collect them here alphabetically.</p>
+          </div>
+        ) : (
+          <div className="saved-grid">
+            {savedCards.map((card) => (
+              <article className="saved-card" key={card.id}>
+                <div className="saved-card-main">
+                  <h3>{card.targetText}</h3>
+                  <p>{card.translation}</p>
+                </div>
+
+                <dl className="saved-card-details">
+                  <div>
+                    <dt>Say it</dt>
+                    <dd>{card.phoneticSpelling}</dd>
+                  </div>
+                  <div>
+                    <dt>Example</dt>
+                    <dd>{card.example}</dd>
+                  </div>
+                </dl>
+
+                <div className="saved-card-actions">
+                  <button
+                    className="icon-button"
+                    type="button"
+                    aria-label={`Play ${card.targetText}`}
+                  >
+                    <Volume2 aria-hidden="true" size={22} />
+                  </button>
+                  <button
+                    className="icon-button"
+                    type="button"
+                    aria-label={`Remove ${card.targetText} from Word Wall`}
+                    onClick={() => onToggleSaved(card.id)}
+                  >
+                    <BookmarkCheck aria-hidden="true" size={22} />
+                  </button>
+                </div>
+              </article>
+            ))}
+          </div>
+        )}
+      </div>
+    </section>
   );
 }
 
