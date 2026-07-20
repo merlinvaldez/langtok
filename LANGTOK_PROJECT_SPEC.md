@@ -15,7 +15,7 @@ By the end of the project, the builder should understand:
 - How to store saved learning items in browser storage.
 - How to run model work outside the main UI thread with Web Workers.
 - How to use WebLLM for browser-local structured text generation.
-- How to use Transformers.js for browser-local text-to-speech.
+- How to compare browser-side TTS options across LiteRT.js, Supertonic web, and Transformers.js/MMS.
 - How to handle model loading progress, cache behavior, device limits, and graceful fallbacks.
 - How to validate LLM output before rendering it in the UI.
 
@@ -46,9 +46,10 @@ Each card should include:
 - Example sentence in the target language.
 - English translation of the example sentence.
 - How to say it phonetically, if available.
-- Topic tags.
 - Audio playback button.
 - Save or unsave button.
+
+Cards should not show visible metadata chips such as language, word/phrase type, part of speech, use case, difficulty, or topic tags. The selected language belongs in the top-level dropdown, not repeated on every card.
 
 ### 4.2 Word Wall
 
@@ -61,7 +62,7 @@ Requirements:
 - Persist saved items locally across page reloads.
 - Let the user unsave items.
 - Let the user replay pronunciation from saved cards.
-- Provide basic filtering by language and type.
+- Keep the saved view minimal. Add language filtering only after the saved list becomes large enough to need it; do not add type or tag filters.
 
 ### 4.3 Review Mode
 
@@ -85,7 +86,8 @@ The first complete MVP should include:
 - Vertical feed layout.
 - Save and unsave actions.
 - Word Wall with local persistence.
-- One working local TTS path for one language.
+- A TTS test harness for Italian, Arabic, Farsi/Persian, and French.
+- One integrated local TTS path once the harness identifies the best browser-side option.
 - Basic model loading state.
 
 The MVP should not require a backend, account system, payments, analytics, or cloud database.
@@ -95,6 +97,15 @@ The MVP should not require a backend, account system, payments, analytics, or cl
 ### 6.1 Text Generation
 
 Use WebLLM for browser-local generation after the static feed and Word Wall are working.
+
+Primary local text model decision:
+
+- Use Gemma 4 E2B IT as the preferred main local text model for LangTok.
+- Treat this model as the first target for browser-local vocabulary and phrase generation.
+- Use it for card generation, English meanings, example sentences, example translations, phonetic spelling, and later review prompts.
+- This model does not replace the local TTS model; pronunciation audio remains a separate browser-local TTS adapter responsibility.
+- Before implementation, verify the exact WebLLM-compatible model id, browser/WebGPU compatibility, download size, memory requirements, and performance on the target device.
+- If Gemma 4 E2B IT is not available in a browser-compatible WebLLM package, use the closest compatible Gemma instruct model and document the deviation.
 
 Generation responsibilities:
 
@@ -113,26 +124,73 @@ Recommended generation strategy:
 
 ### 6.2 Text-to-Speech
 
-Use Transformers.js text-to-speech models for browser-local pronunciation.
+Use a browser-local TTS adapter for pronunciation. Do not bind the UI directly to one model library. The app should expose one internal function such as `speak({ text, languageCode })`, then route that request to the best available local model for the selected language.
+
+Initial target languages:
+
+- Italian (`it`)
+- Arabic (`ar`)
+- Farsi/Persian (`fa` in the UI; many model repositories use ISO 639-3 `fas`)
+- French (`fr`)
 
 TTS responsibilities:
 
 - Load a language-appropriate TTS model.
 - Generate audio from the card target text.
 - Play generated audio in the browser.
-- Cache or reuse the loaded TTS pipeline for the selected language.
-- Show loading state when a voice model is first loaded.
+- Cache or reuse the loaded TTS runtime for the selected language.
+- Show loading and error states when a voice model is first loaded.
+- Keep TTS work outside fragile UI components, preferably in a service module first and a Web Worker once model loading becomes heavy.
 
-Initial language strategy:
+Research findings:
 
-- Start with one language for the first TTS implementation, preferably Spanish.
-- Expand to English, French, and German after the first path works.
-- Maintain a model map from language code to TTS model id.
+- LiteRT.js is a browser runtime for running `.tflite` models with WebGPU, WebNN, or WASM. It is not itself a ready-made TTS product, so LangTok still needs a compatible TTS model plus tokenization, audio decoding, and playback logic.
+- No single pure LiteRT browser-ready TTS model was found that clearly covers Italian, Arabic, Farsi/Persian, and French.
+- Supertonic 3 is the strongest first candidate for natural browser-side multilingual TTS. It is a 99M-parameter ONNX Runtime model with a browser example through `@supertone/supertonic-web`. Its documented language list includes Italian, Arabic, and French, but does not list Farsi/Persian.
+- Qwen3-TTS LiteRT is useful to study because it is a real LiteRT TTS conversion, but it is not the first implementation target. The LiteRT model card lists 10 languages and the documented base coverage includes Italian and French, but not Arabic or Farsi/Persian. The current sample path is Python/Android-oriented and large enough that it should be treated as a later research spike.
+- MMS-TTS through Transformers.js/ONNX is the best fallback family to investigate for language coverage. Browser-compatible ONNX models are confirmed for Arabic and French through Xenova model repositories. Persian exists as `facebook/mms-tts-fas`, but a browser-compatible ONNX path must be verified or converted before integration. Italian MMS-TTS browser support was not confirmed, so Italian should start with Supertonic or Qwen research instead.
 
-Fallback policy:
+Recommended TTS strategy:
 
-- The primary goal is local model-backed TTS.
-- Browser `SpeechSynthesis` may be used only as a clearly labeled fallback for unsupported devices or missing local model support.
+- Build a small TTS harness before wiring the production audio button.
+- Test one short word and one short phrase for Italian, Arabic, Farsi/Persian, and French.
+- Record model size, first-load time, repeat-play latency, browser support, audio quality, and licensing constraints.
+- Try Supertonic 3 web first for Italian, Arabic, and French.
+- Use MMS-TTS/Transformers.js as the primary fallback path for Arabic, French, and especially Farsi/Persian.
+- Keep Qwen3-TTS LiteRT as a later LiteRT-specific learning spike, not as the MVP dependency.
+- Use browser `SpeechSynthesis` only as a clearly labeled fallback for unsupported devices or missing local model coverage.
+
+Candidate model map:
+
+```json
+{
+  "it": {
+    "label": "Italian",
+    "primaryTts": "supertonic-web",
+    "fallbackTts": null,
+    "status": "candidate"
+  },
+  "ar": {
+    "label": "Arabic",
+    "primaryTts": "supertonic-web",
+    "fallbackTts": "Xenova/mms-tts-ara",
+    "status": "candidate"
+  },
+  "fa": {
+    "label": "Farsi",
+    "primaryTts": "mms-tts",
+    "fallbackTts": "browser-speech-synthesis",
+    "modelToValidate": "facebook/mms-tts-fas",
+    "status": "needs browser-compatible ONNX validation"
+  },
+  "fr": {
+    "label": "French",
+    "primaryTts": "supertonic-web",
+    "fallbackTts": "Xenova/mms-tts-fra",
+    "status": "candidate"
+  }
+}
+```
 
 ## 7. Suggested Tech Stack
 
@@ -140,7 +198,9 @@ Fallback policy:
 - Vite for local development and bundling.
 - Plain CSS or CSS modules for styling.
 - WebLLM for local LLM generation.
-- Transformers.js for local TTS.
+- Supertonic web as the first local natural TTS candidate.
+- Transformers.js/MMS for fallback TTS coverage.
+- LiteRT.js for `.tflite` model experiments and later TTS research spikes.
 - Web Workers for model operations.
 - IndexedDB for saved cards and generated history.
 - localStorage for lightweight preferences.
@@ -152,15 +212,13 @@ Fallback policy:
 ```json
 {
   "id": "local-generated-id",
-  "language": "Spanish",
-  "languageCode": "es",
-  "type": "word",
-  "targetText": "todavia",
-  "translation": "still / yet",
-  "phoneticSpelling": "toh-dah-VEE-ah",
-  "example": "Todavia estoy aprendiendo.",
+  "language": "Italian",
+  "languageCode": "it",
+  "targetText": "ancora",
+  "translation": "still / again",
+  "phoneticSpelling": "ahn-KOH-rah",
+  "example": "Sto ancora imparando.",
   "exampleTranslation": "I am still learning.",
-  "tags": ["daily-life", "adverb"],
   "source": "static-seed",
   "createdAt": "2026-07-18T00:00:00.000Z",
   "savedAt": null,
@@ -173,10 +231,14 @@ Fallback policy:
 
 ```json
 {
-  "label": "Spanish",
-  "code": "es",
-  "generationName": "Spanish",
-  "ttsModel": "Xenova/mms-tts-spa",
+  "label": "Italian",
+  "code": "it",
+  "generationName": "Italian",
+  "tts": {
+    "primary": "supertonic-web",
+    "fallback": null,
+    "status": "candidate"
+  },
   "enabled": true
 }
 ```
@@ -203,11 +265,10 @@ Primary route or view: `/word-wall`
 Main UI elements:
 
 - Saved card list or grid sorted alphabetically by target text.
-- Language filter.
-- Type filter.
 - Audio replay button.
 - Remove saved item button.
 - Entry point into Review Mode.
+- Optional language filter only if saved items across multiple languages become hard to scan.
 
 ### 9.3 Review Screen
 
@@ -274,15 +335,20 @@ Acceptance criteria:
 
 Learning focus:
 
-- Transformers.js pipelines.
+- Browser-side model runtime tradeoffs.
+- Supertonic web setup.
+- Transformers.js/MMS fallback setup.
+- LiteRT.js feasibility testing.
 - Model loading progress.
 - Audio playback from generated model output.
 - Browser model performance constraints.
 
 Deliverables:
 
-- TTS service module or worker.
-- One working local TTS model.
+- TTS service module with a stable `speak({ text, languageCode })` interface.
+- TTS test harness for Italian, Arabic, Farsi/Persian, and French.
+- Documented model results for each initial language.
+- One working integrated local TTS path after the harness proves the best candidate.
 - Audio playback button.
 - Loading and error states.
 
@@ -291,12 +357,14 @@ Acceptance criteria:
 - Clicking audio loads the model if needed.
 - The app plays generated pronunciation audio.
 - The UI remains responsive while audio is prepared.
+- The harness records whether each initial language is supported by the selected local TTS path.
 
 ### Milestone 4: WebLLM Generation Prototype
 
 Learning focus:
 
 - WebLLM model loading.
+- Gemma-family browser compatibility checks.
 - Prompt design.
 - Structured JSON generation.
 - Runtime validation.
@@ -307,6 +375,7 @@ Deliverables:
 - Generate-card-batch function.
 - JSON parsing and validation.
 - Append generated cards to the feed.
+- Documented model id and fallback if Gemma 4 E2B IT is not WebLLM-compatible.
 
 Acceptance criteria:
 
@@ -363,19 +432,17 @@ The generation prompt should require JSON with no markdown wrapper.
 Example prompt intent:
 
 ```text
-Generate 8 beginner-friendly language learning cards for Spanish.
+Generate 8 beginner-friendly language learning cards for {selectedLanguage}.
 Mix useful words and short phrases.
 Return only valid JSON with this shape:
 {
   "cards": [
     {
-      "type": "word" | "phrase",
       "targetText": "string",
       "translation": "string",
       "phoneticSpelling": "string",
       "example": "string",
-      "exampleTranslation": "string",
-      "tags": ["string"]
+      "exampleTranslation": "string"
     }
   ]
 }
@@ -387,9 +454,7 @@ Do not include duplicates. Do not include offensive, adult, or overly obscure co
 Generated cards must be rejected unless:
 
 - `targetText`, `translation`, `example`, and `exampleTranslation` are non-empty strings.
-- `type` is `word` or `phrase`.
 - `phoneticSpelling` is either absent or a non-empty string explaining how to say the item phonetically.
-- `tags` is an array of short strings.
 - The target text is not already present in the current session for the selected language.
 
 ## 13. UX Principles
@@ -397,6 +462,7 @@ Generated cards must be rejected unless:
 - The first screen should be the actual feed, not a landing page.
 - Controls should be minimal and familiar.
 - Cards should be readable on mobile.
+- Do not show visible card metadata chips for language, word/phrase type, part of speech, use case, difficulty, topic tags, or local-model marketing copy.
 - Loading states should explain what is happening without overexplaining the technology.
 - AI failures should produce retryable UI states, not broken cards.
 - Saved vocabulary should always feel recoverable and stable.
@@ -415,6 +481,11 @@ Generated cards must be rejected unless:
 - Browser-local models can be large and slow to load the first time.
 - WebGPU support varies across browsers and devices.
 - TTS model quality and language coverage vary.
+- No confirmed single pure LiteRT browser TTS path currently covers Italian, Arabic, Farsi/Persian, and French.
+- Supertonic 3 covers several target languages but does not list Farsi/Persian in its supported language list.
+- Qwen3-TTS LiteRT is large and not yet a simple browser drop-in integration path.
+- MMS-TTS has broad language coverage, but browser-ready ONNX availability must be verified per language.
+- Model licenses differ. Review Supertonic, MMS, Qwen, and any converted model licenses before commercial use.
 - Local LLM output may be malformed or linguistically imperfect.
 - Running both LLM generation and TTS in the same browser session can be memory-intensive.
 
@@ -423,6 +494,8 @@ Mitigations:
 - Start with static cards.
 - Add one local model at a time.
 - Use workers for model work.
+- Keep TTS behind an adapter so model choices can change without redesigning the app.
+- Run a browser TTS harness before committing to one voice stack.
 - Validate all generated data.
 - Show model loading progress and retry states.
 - Keep model choices configurable.
@@ -431,8 +504,15 @@ Mitigations:
 
 - WebLLM Basic Usage: https://webllm.mlc.ai/docs/user/basic_usage.html
 - WebLLM Advanced Use Cases: https://webllm.mlc.ai/docs/user/advanced_usage.html
+- LiteRT.js Get Started: https://developers.google.com/edge/litert/web/get_started
+- Supertonic 3 Overview: https://supertonic3.github.io/
+- Supertonic GitHub Repository: https://github.com/supertone-inc/supertonic
+- Qwen3-TTS LiteRT model: https://huggingface.co/litert-community/Qwen3-TTS-12Hz-0.6B-Base
 - Transformers.js Overview: https://huggingface.co/docs/transformers.js/index
-- Transformers.js SpeechT5 TTS model: https://huggingface.co/Xenova/speecht5_tts
+- MMS-TTS model collection: https://huggingface.co/facebook/mms-tts
+- Persian MMS-TTS model: https://huggingface.co/facebook/mms-tts-fas
+- Arabic MMS-TTS ONNX model: https://huggingface.co/Xenova/mms-tts-ara
+- French MMS-TTS ONNX model: https://huggingface.co/Xenova/mms-tts-fra
 - MDN Web Workers: https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API/Using_web_workers
 - MDN SpeechSynthesis fallback API: https://developer.mozilla.org/en-US/docs/Web/API/SpeechSynthesis
 
