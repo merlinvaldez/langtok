@@ -1,29 +1,26 @@
 # LangTok
 
-LangTok is a React learning project for experimenting with browser-local AI for language learning. The app is designed as a short-form, TikTok-like feed where learners choose a target language, scroll through vocabulary and phrase cards, save useful items to a Word Wall, and eventually hear pronunciation from local browser-side text-to-speech models.
-
-This repository currently contains the start of the third implementation milestone: a static feed, saved-card persistence, a Word Wall, and a browser-side TTS test harness.
+LangTok is a React learning project for experimenting with browser-local AI for language learning. The app uses a short-form vertical feed where learners choose a target language, scroll through vocabulary and phrase cards, save useful items to a Word Wall, and hear pronunciation through browser-side text-to-speech.
 
 ## Current Features
 
 - Vite + React app scaffold.
 - Mobile-first vertical feed with full-screen scroll snapping.
-- Language dropdown for Italian, Arabic, Farsi, and French.
+- Language dropdown for Italian, Arabic, and French.
 - Static vocabulary and phrase cards.
 - Minimal cards with target text, English meaning, phonetic spelling, example sentence, and example translation.
 - Save and unsave interaction backed by `localStorage`.
 - Word Wall view with saved cards sorted alphabetically by target text.
-- TTS adapter with a stable `speak({ text, languageCode })` path.
-- Worker-backed MMS/Transformers.js synthesis where a browser-compatible model is configured.
-- Compact TTS test harness for the initial four languages.
-- Persistent TTS result log backed by `localStorage`.
-- System voice fallback for languages that do not yet have a confirmed browser model path.
+- Supertonic 3 browser-local TTS through `onnxruntime-web`.
+- Browser Cache API pre-download for Supertonic ONNX assets and the `M1` voice style.
+- Compact TTS test harness for Italian, Arabic, and French.
+- Separate `ttsText` values for pronunciation-friendly audio input.
 
 ## Planned Learning Milestones
 
 1. Static product skeleton.
 2. Word Wall with alphabetically organized saved cards.
-3. Browser-local text-to-speech harness across Italian, Arabic, Farsi, and French.
+3. Supertonic 3 browser-local text-to-speech.
 4. Browser-local vocabulary generation with WebLLM.
 5. Infinite generated feed.
 6. Review mode for saved cards.
@@ -35,10 +32,9 @@ The full learning project spec is in `LANGTOK_PROJECT_SPEC.md`.
 - React
 - Vite
 - lucide-react icons
-- Transformers.js for browser-side TTS experiments
+- ONNX Runtime Web through `onnxruntime-web`
+- Supertonic 3 model assets from `Supertone/supertonic-3`
 - Planned: WebLLM for browser-local text generation
-- Planned: Supertonic 3 browser asset spike for Italian, Arabic, and French
-- Planned: LiteRT.js model spike after the working TTS baseline is measured
 - Planned: IndexedDB for saved vocabulary persistence
 
 ## Getting Started
@@ -63,15 +59,25 @@ npm run build
 
 ## TTS Notes
 
-Open the speaker icon in the header to test the current TTS harness. Arabic and French are wired to browser-compatible MMS models through Transformers.js. Farsi attempts the Meta MMS Persian model so we can validate whether the current browser runtime can load it directly. Italian currently uses the system voice fallback while the Supertonic 3 browser asset path is tested.
+Open the speaker icon in the header to test the TTS harness. LangTok now uses Supertonic 3 only for pronunciation audio. There is no system `SpeechSynthesis` fallback and no Google Cloud/backend TTS fallback.
 
-The first model-backed TTS run downloads model assets into the browser cache, so the first click can take much longer than repeat playback.
+The first model setup downloads and caches these browser assets from Hugging Face:
 
-The harness stores the latest result per language in `localStorage` under `langtok:ttsResults`. Each entry records the tested sample, engine, model id, load time, generation time, total time, fallback reason, and timestamp.
+- `onnx/tts.json`
+- `onnx/unicode_indexer.json`
+- `onnx/duration_predictor.onnx`
+- `onnx/text_encoder.onnx`
+- `onnx/vector_estimator.onnx`
+- `onnx/vocoder.onnx`
+- `voice_styles/M1.json`
+
+Farsi is removed from the MVP because Supertonic 3 documents Arabic, French, and Italian support, but does not list Persian/Farsi. Arabic cards use vocalized `ttsText`, such as `شُكْرًا` and `مِنْ فَضْلَك`, so the generated audio matches the displayed phonetic guide.
+
+The harness stores a versioned latest result per language in `localStorage` under `langtok:ttsResults`. Each entry records the tested sample, engine, model id, voice style, ONNX backend, load time, generation time, total time, and timestamp.
 
 ## Project Status
 
-LangTok is early-stage. The current app is intentionally static so the core interaction model is clear before adding local model loading, workers, caching, validation, and persistence.
+LangTok is early-stage. The current app is intentionally static so the core interaction model is clear before adding local text generation, workers, generated-card validation, and durable persistence.
 
 ## Privacy Goal
 

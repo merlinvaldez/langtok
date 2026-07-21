@@ -1,185 +1,81 @@
 import { getTtsLanguageConfig } from "./ttsConfig.js";
 
-const pendingRequests = new Map();
+let audioContext = null;
+let supertonicModulePromise = null;
 
-let activeWorker = null;
-let requestCounter = 0;
-let sharedAudioContext = null;
-
-function createRequestId() {
-  requestCounter += 1;
-  return `tts-${Date.now()}-${requestCounter}`;
-}
-
-function getWorker() {
-  if (activeWorker) {
-    return activeWorker;
+function getSupertonicModule() {
+  if (!supertonicModulePromise) {
+    supertonicModulePromise = import("./supertonicRuntime.js");
   }
 
-  activeWorker = new Worker(new URL("./ttsWorker.js", import.meta.url), {
-    type: "module",
-  });
-
-  activeWorker.addEventListener("message", (event) => {
-    const payload = event.data ?? {};
-    const pendingRequest = pendingRequests.get(payload.requestId);
-
-    if (!pendingRequest) {
-      return;
-    }
-
-    if (payload.type === "status") {
-      pendingRequest.onStatus?.({
-        message: payload.message,
-        phase: payload.phase,
-        progress: payload.progress,
-        source: "model",
-      });
-      return;
-    }
-
-    pendingRequests.delete(payload.requestId);
-
-    if (payload.type === "result") {
-      pendingRequest.resolve({
-        audio: new Float32Array(payload.audio),
-        engine: "mms-transformers",
-        metrics: payload.metrics,
-        modelId: payload.modelId,
-        samplingRate: payload.samplingRate,
-      });
-      return;
-    }
-
-    pendingRequest.reject(new Error(payload.message || "TTS synthesis failed."));
-  });
-
-  activeWorker.addEventListener("error", (event) => {
-    const error = new Error(event.message || "TTS worker failed.");
-
-    for (const pendingRequest of pendingRequests.values()) {
-      pendingRequest.reject(error);
-    }
-
-    pendingRequests.clear();
-    activeWorker = null;
-  });
-
-  return activeWorker;
+  return supertonicModulePromise;
 }
 
 function getAudioContext() {
-  const AudioContextConstructor = window.AudioContext || window.webkitAudioContext;
+  if (!audioContext) {
+    const AudioContextConstructor = window.AudioContext ?? window.webkitAudioContext;
 
-  if (!AudioContextConstructor) {
-    throw new Error("This browser does not support Web Audio playback.");
+    if (!AudioContextConstructor) {
+      throw new Error("This browser does not support Web Audio playback.");
+    }
+
+    audioContext = new AudioContextConstructor();
   }
 
-  if (!sharedAudioContext) {
-    sharedAudioContext = new AudioContextConstructor();
-  }
-
-  return sharedAudioContext;
+  return audioContext;
 }
 
-async function playFloatAudio(audio, samplingRate) {
-  const audioContext = getAudioContext();
+async function unlockAudioContext() {
+  const context = getAudioContext();
 
-  if (audioContext.state === "suspended") {
-    await audioContext.resume();
+  if (context.state === "suspended") {
+    await context.resume();
+  }
+}
+
+async function playAudio(audio, samplingRate) {
+  const context = getAudioContext();
+
+  if (context.state === "suspended") {
+    await context.resume();
   }
 
-  const audioBuffer = audioContext.createBuffer(1, audio.length, samplingRate);
-  audioBuffer.copyToChannel(audio, 0);
+  const buffer = context.createBuffer(1, audio.length, samplingRate);
+  buffer.copyToChannel(audio, 0);
 
-  const source = audioContext.createBufferSource();
-  source.buffer = audioBuffer;
-  source.connect(audioContext.destination);
+  const source = context.createBufferSource();
+  source.buffer = buffer;
+  source.connect(context.destination);
 
-  await new Promise((resolve) => {
+  await new Promise((resolve, reject) => {
     source.addEventListener("ended", resolve, { once: true });
-    source.start();
-  });
-}
 
-function chooseSpeechSynthesisVoice(languageConfig) {
-  const voices = window.speechSynthesis.getVoices();
-  const exactMatch = voices.find((voice) => voice.lang === languageConfig.fallbackSpeechLang);
-
-  if (exactMatch) {
-    return exactMatch;
-  }
-
-  return voices.find((voice) =>
-    voice.lang.toLowerCase().startsWith(languageConfig.code.toLowerCase()),
-  );
-}
-
-function speakWithSpeechSynthesis(text, languageConfig) {
-  return new Promise((resolve, reject) => {
-    if (!("speechSynthesis" in window)) {
-      reject(new Error("This browser does not expose SpeechSynthesis fallback voices."));
-      return;
+    try {
+      source.start();
+    } catch (error) {
+      reject(error);
     }
-
-    const startedAt = performance.now();
-    const utterance = new SpeechSynthesisUtterance(text);
-    const matchingVoice = chooseSpeechSynthesisVoice(languageConfig);
-
-    utterance.lang = languageConfig.fallbackSpeechLang;
-    utterance.rate = 0.92;
-
-    if (matchingVoice) {
-      utterance.voice = matchingVoice;
-    }
-
-    utterance.addEventListener(
-      "end",
-      () => {
-        resolve({
-          engine: "speech-synthesis",
-          metrics: {
-            loadMs: 0,
-            synthMs: 0,
-            totalMs: Math.round(performance.now() - startedAt),
-          },
-          modelId: null,
-          samplingRate: null,
-        });
-      },
-      { once: true },
-    );
-
-    utterance.addEventListener(
-      "error",
-      (event) => {
-        reject(new Error(`SpeechSynthesis failed: ${event.error}`));
-      },
-      { once: true },
-    );
-
-    window.speechSynthesis.cancel();
-    window.speechSynthesis.speak(utterance);
   });
 }
 
-function synthesizeWithModel({ modelId, onStatus, text }) {
-  const requestId = createRequestId();
+export async function getSupertonicCacheStatus() {
+  const supertonic = await getSupertonicModule();
 
-  return new Promise((resolve, reject) => {
-    pendingRequests.set(requestId, {
-      onStatus,
-      reject,
-      resolve,
-    });
+  return supertonic.getSupertonicCacheStatus();
+}
 
-    getWorker().postMessage({
-      modelId,
-      requestId,
-      text,
-      type: "synthesize",
-    });
-  });
+export async function prepareTtsModel({ onStatus } = {}) {
+  const supertonic = await getSupertonicModule();
+
+  await supertonic.preloadSupertonicAssets({ onStatus });
+  const { runtime } = await supertonic.loadSupertonicRuntime({ onStatus });
+
+  return {
+    backend: runtime.backend,
+    cached: true,
+    modelId: supertonic.SUPERTONIC_MODEL_ID,
+    voiceName: supertonic.SUPERTONIC_VOICE_STYLE,
+  };
 }
 
 export async function speak({ languageCode, onStatus, text }) {
@@ -189,39 +85,31 @@ export async function speak({ languageCode, onStatus, text }) {
     throw new Error(`No TTS language config exists for ${languageCode}.`);
   }
 
-  if (languageConfig.modelId) {
-    try {
-      const result = await synthesizeWithModel({
-        modelId: languageConfig.modelId,
-        onStatus,
-        text,
-      });
-
-      await playFloatAudio(result.audio, result.samplingRate);
-      return result;
-    } catch (error) {
-      onStatus?.({
-        message: "Trying system voice fallback",
-        phase: "fallback",
-        source: "speech-synthesis",
-      });
-
-      const fallbackResult = await speakWithSpeechSynthesis(text, languageConfig);
-
-      return {
-        ...fallbackResult,
-        fallbackReason: error instanceof Error ? error.message : String(error),
-      };
-    }
-  }
+  await unlockAudioContext();
 
   onStatus?.({
-    message: "Using system voice fallback",
-    phase: "fallback",
-    source: "speech-synthesis",
+    message: "Preparing Supertonic",
+    phase: "loading",
+    source: "supertonic",
   });
 
-  return speakWithSpeechSynthesis(text, languageConfig);
+  const supertonic = await getSupertonicModule();
+  const result = await supertonic.synthesizeWithSupertonic({
+    languageCode: languageConfig.supertonicLang,
+    onStatus,
+    text,
+  });
+
+  await playAudio(result.audio, result.samplingRate);
+
+  return {
+    backend: result.backend,
+    engine: "supertonic-3",
+    metrics: result.metrics,
+    modelId: result.modelId,
+    samplingRate: result.samplingRate,
+    voiceName: result.voiceName,
+  };
 }
 
 export function getTtsEngineLabel(result) {
@@ -229,9 +117,5 @@ export function getTtsEngineLabel(result) {
     return "";
   }
 
-  if (result.engine === "speech-synthesis") {
-    return "system voice";
-  }
-
-  return result.modelId ?? "local model";
+  return result.backend ? `Supertonic 3 (${result.backend})` : "Supertonic 3";
 }

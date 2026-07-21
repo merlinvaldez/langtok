@@ -2,6 +2,7 @@ import {
   ArrowLeft,
   Bookmark,
   BookmarkCheck,
+  Download,
   Grid2X2,
   Languages,
   Trash2,
@@ -9,11 +10,17 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { LANGUAGES, SAMPLE_CARDS } from "./data.js";
-import { getTtsLanguageConfig, TTS_TEST_CASES } from "./ttsConfig.js";
-import { getTtsEngineLabel, speak } from "./ttsService.js";
+import { TTS_TEST_CASES, getTtsLanguageConfig } from "./ttsConfig.js";
+import {
+  getSupertonicCacheStatus,
+  getTtsEngineLabel,
+  prepareTtsModel,
+  speak,
+} from "./ttsService.js";
 
 const SAVED_CARD_IDS_STORAGE_KEY = "langtok:savedCardIds";
 const TTS_RESULTS_STORAGE_KEY = "langtok:ttsResults";
+const TTS_RESULTS_STORAGE_VERSION = 4;
 const SPEECH_STATUS_CLEAR_DELAY_MS = 5200;
 
 function loadSavedCardIds() {
@@ -32,16 +39,28 @@ function loadTtsResults() {
     const savedValue = window.localStorage.getItem(TTS_RESULTS_STORAGE_KEY);
     const parsedValue = savedValue ? JSON.parse(savedValue) : {};
 
-    return parsedValue && typeof parsedValue === "object" && !Array.isArray(parsedValue)
-      ? parsedValue
-      : {};
+    if (!parsedValue || typeof parsedValue !== "object" || Array.isArray(parsedValue)) {
+      return {};
+    }
+
+    if (parsedValue.version !== TTS_RESULTS_STORAGE_VERSION) {
+      return {};
+    }
+
+    return parsedValue.results && typeof parsedValue.results === "object" ? parsedValue.results : {};
   } catch {
     return {};
   }
 }
 
 function persistTtsResults(results) {
-  window.localStorage.setItem(TTS_RESULTS_STORAGE_KEY, JSON.stringify(results));
+  window.localStorage.setItem(
+    TTS_RESULTS_STORAGE_KEY,
+    JSON.stringify({
+      results,
+      version: TTS_RESULTS_STORAGE_VERSION,
+    }),
+  );
 }
 
 function getLanguageDirection(languageCode) {
@@ -49,11 +68,7 @@ function getLanguageDirection(languageCode) {
 }
 
 function getErrorMessage(error) {
-  if (error instanceof Error) {
-    return error.message;
-  }
-
-  return String(error);
+  return error instanceof Error ? error.message : String(error);
 }
 
 function formatMs(milliseconds) {
@@ -70,44 +85,51 @@ function formatTimestamp(timestamp) {
   }
 
   return new Intl.DateTimeFormat(undefined, {
+    day: "numeric",
     hour: "numeric",
     minute: "2-digit",
     month: "short",
-    day: "numeric",
   }).format(new Date(timestamp));
 }
 
-function buildSpeechStatusMessage(languageConfig, status) {
-  if (!languageConfig) {
-    return status.message ?? "Preparing audio";
-  }
+function buildStatusMessage(languageConfig, status) {
+  const prefix = languageConfig ? languageConfig.label : "Supertonic";
 
-  if (status.phase === "fallback") {
-    return `${languageConfig.label}: ${status.message}`;
-  }
-
-  return `${languageConfig.label}: ${status.message ?? "Preparing audio"}`;
+  return `${prefix}: ${status.message ?? "Preparing audio"}`;
 }
 
 function buildResultMessage(languageConfig, result) {
   const engineLabel = getTtsEngineLabel(result);
+  const loadText = result.metrics?.loadMs ? `loaded ${formatMs(result.metrics.loadMs)}, ` : "";
 
-  if (result.engine === "speech-synthesis") {
-    return `${languageConfig.label}: played with ${engineLabel}`;
+  return `${languageConfig.label}: ${engineLabel} ${loadText}generated ${formatMs(
+    result.metrics?.synthMs,
+  )}`;
+}
+
+function buildIdleTtsMessage(modelCacheStatus) {
+  if (!modelCacheStatus.checked) {
+    return "Checking model";
   }
 
-  return `${languageConfig.label}: ${engineLabel} loaded ${formatMs(
-    result.metrics?.loadMs,
-  )}, generated ${formatMs(result.metrics?.synthMs)}`;
+  if (modelCacheStatus.cached) {
+    return "Ready";
+  }
+
+  if (!modelCacheStatus.supportsCache) {
+    return "Ready without persistent cache";
+  }
+
+  return `Cached ${modelCacheStatus.cachedCount}/${modelCacheStatus.total}`;
 }
 
 function buildTtsLogEntry({ languageCode, message, result, sampleLabel, text, tone }) {
   const testedAt = new Date().toISOString();
 
   return {
+    backend: result?.backend ?? null,
     engine: result?.engine ?? null,
     engineLabel: result ? getTtsEngineLabel(result) : null,
-    fallbackReason: result?.fallbackReason ?? null,
     languageCode,
     loadMs: result?.metrics?.loadMs ?? null,
     message,
@@ -119,6 +141,7 @@ function buildTtsLogEntry({ languageCode, message, result, sampleLabel, text, to
     text,
     tone,
     totalMs: result?.metrics?.totalMs ?? null,
+    voiceName: result?.voiceName ?? null,
   };
 }
 
@@ -129,6 +152,13 @@ function App() {
   const [activeSpeechKey, setActiveSpeechKey] = useState(null);
   const [speechStatus, setSpeechStatus] = useState(null);
   const [ttsResults, setTtsResults] = useState(loadTtsResults);
+  const [modelCacheStatus, setModelCacheStatus] = useState({
+    cached: false,
+    cachedCount: 0,
+    checked: false,
+    supportsCache: true,
+    total: 7,
+  });
 
   const visibleCards = useMemo(
     () => SAMPLE_CARDS.filter((card) => card.languageCode === selectedLanguage),
@@ -161,6 +191,17 @@ function App() {
     return () => window.clearTimeout(timeoutId);
   }, [speechStatus]);
 
+  useEffect(() => {
+    if (activeView === "tts") {
+      refreshModelCacheStatus();
+    }
+  }, [activeView]);
+
+  async function refreshModelCacheStatus() {
+    const status = await getSupertonicCacheStatus();
+    setModelCacheStatus(status);
+  }
+
   function toggleSaved(cardId) {
     setSavedCardIds((currentIds) =>
       currentIds.includes(cardId)
@@ -189,6 +230,41 @@ function App() {
     setTtsResults({});
   }
 
+  async function handlePrepareModel() {
+    const speechKey = "tts:prepare";
+
+    setActiveSpeechKey(speechKey);
+    setSpeechStatus({
+      message: "Supertonic: preparing model",
+      tone: "loading",
+    });
+
+    try {
+      await prepareTtsModel({
+        onStatus: (status) => {
+          setSpeechStatus({
+            message: buildStatusMessage(null, status),
+            tone: "loading",
+          });
+        },
+      });
+
+      await refreshModelCacheStatus();
+
+      setSpeechStatus({
+        message: "Supertonic: ready",
+        tone: "success",
+      });
+    } catch (error) {
+      setSpeechStatus({
+        message: `Supertonic: ${getErrorMessage(error)}`,
+        tone: "error",
+      });
+    } finally {
+      setActiveSpeechKey((currentKey) => (currentKey === speechKey ? null : currentKey));
+    }
+  }
+
   async function handleSpeak({ languageCode, resultKey, sampleLabel, speechKey, text }) {
     const languageConfig = getTtsLanguageConfig(languageCode);
     const initialMessage = languageConfig
@@ -215,7 +291,7 @@ function App() {
       const result = await speak({
         languageCode,
         onStatus: (status) => {
-          const message = buildSpeechStatusMessage(languageConfig, status);
+          const message = buildStatusMessage(languageConfig, status);
 
           setSpeechStatus({
             message,
@@ -235,6 +311,8 @@ function App() {
         text,
       });
 
+      await refreshModelCacheStatus();
+
       const message = buildResultMessage(languageConfig, result);
 
       setSpeechStatus({
@@ -251,7 +329,7 @@ function App() {
             result,
             sampleLabel,
             text,
-            tone: result.engine === "speech-synthesis" ? "fallback" : "success",
+            tone: "success",
           }),
           true,
         );
@@ -355,8 +433,10 @@ function App() {
       {activeView === "tts" ? (
         <TtsHarness
           activeSpeechKey={activeSpeechKey}
-          onClearResults={clearTtsResults}
+          modelCacheStatus={modelCacheStatus}
           onBackToFeed={() => setActiveView("feed")}
+          onClearResults={clearTtsResults}
+          onPrepareModel={handlePrepareModel}
           onSpeak={handleSpeak}
           results={ttsResults}
         />
@@ -409,12 +489,13 @@ function LanguageCard({ activeSpeechKey, card, isSaved, onSpeak, onToggleSaved }
             onSpeak({
               languageCode: card.languageCode,
               speechKey,
-              text: card.targetText,
+              text: card.ttsText ?? card.targetText,
             })
           }
         >
           <Volume2 aria-hidden="true" className={isSpeaking ? "is-pulsing" : ""} size={24} />
         </button>
+
         <button
           className="icon-button"
           type="button"
@@ -479,7 +560,7 @@ function WordWall({ activeSpeechKey, onBackToFeed, onSpeak, onToggleSaved, saved
                         onSpeak({
                           languageCode: card.languageCode,
                           speechKey,
-                          text: card.targetText,
+                          text: card.ttsText ?? card.targetText,
                         })
                       }
                     >
@@ -489,6 +570,7 @@ function WordWall({ activeSpeechKey, onBackToFeed, onSpeak, onToggleSaved, saved
                         size={22}
                       />
                     </button>
+
                     <button
                       className="icon-button"
                       type="button"
@@ -508,19 +590,40 @@ function WordWall({ activeSpeechKey, onBackToFeed, onSpeak, onToggleSaved, saved
   );
 }
 
-function TtsHarness({ activeSpeechKey, onBackToFeed, onClearResults, onSpeak, results }) {
+function TtsHarness({
+  activeSpeechKey,
+  modelCacheStatus,
+  onBackToFeed,
+  onClearResults,
+  onPrepareModel,
+  onSpeak,
+  results,
+}) {
   const hasResults = Object.keys(results).length > 0;
+  const isPreparing = activeSpeechKey === "tts:prepare";
 
   return (
     <section className="tts-harness" aria-label="TTS test harness">
       <div className="tts-harness-inner">
         <ViewHeader onBackToFeed={onBackToFeed} title="TTS">
-          {hasResults ? (
-            <button className="clear-button" type="button" onClick={onClearResults}>
-              <Trash2 aria-hidden="true" size={17} />
-              <span>Clear</span>
+          <div className="view-header-actions">
+            <button
+              className="clear-button"
+              type="button"
+              disabled={Boolean(activeSpeechKey)}
+              onClick={onPrepareModel}
+            >
+              <Download aria-hidden="true" className={isPreparing ? "is-pulsing" : ""} size={17} />
+              <span>{modelCacheStatus.cached ? "Ready" : "Download"}</span>
             </button>
-          ) : null}
+
+            {hasResults ? (
+              <button className="clear-button" type="button" onClick={onClearResults}>
+                <Trash2 aria-hidden="true" size={17} />
+                <span>Clear</span>
+              </button>
+            ) : null}
+          </div>
         </ViewHeader>
 
         <div className="tts-grid">
@@ -533,12 +636,14 @@ function TtsHarness({ activeSpeechKey, onBackToFeed, onClearResults, onSpeak, re
               <article className="tts-card" key={testCase.code}>
                 <div className="tts-card-main">
                   <h3>{testCase.label}</h3>
-                  <p>{testCase.primary}</p>
+                  <p>{buildIdleTtsMessage(modelCacheStatus)}</p>
                 </div>
 
                 <div className="tts-samples">
                   <p dir={testCase.direction}>{testCase.sampleWord}</p>
+                  <small>{testCase.sampleWordPhonetic}</small>
                   <p dir={testCase.direction}>{testCase.samplePhrase}</p>
+                  <small>{testCase.samplePhrasePhonetic}</small>
                 </div>
 
                 <div className="tts-actions">
@@ -552,7 +657,7 @@ function TtsHarness({ activeSpeechKey, onBackToFeed, onClearResults, onSpeak, re
                         resultKey: testCase.code,
                         sampleLabel: "word",
                         speechKey: wordSpeechKey,
-                        text: testCase.sampleWord,
+                        text: testCase.sampleTtsWord ?? testCase.sampleWord,
                       })
                     }
                   >
@@ -574,7 +679,7 @@ function TtsHarness({ activeSpeechKey, onBackToFeed, onClearResults, onSpeak, re
                         resultKey: testCase.code,
                         sampleLabel: "phrase",
                         speechKey: phraseSpeechKey,
-                        text: testCase.samplePhrase,
+                        text: testCase.sampleTtsPhrase ?? testCase.samplePhrase,
                       })
                     }
                   >
@@ -588,7 +693,7 @@ function TtsHarness({ activeSpeechKey, onBackToFeed, onClearResults, onSpeak, re
                 </div>
 
                 <div className={`tts-result ${result?.tone ?? "idle"}`} aria-live="polite">
-                  <p>{result?.message ?? `${testCase.status}: ${testCase.note}`}</p>
+                  <p>{result?.message ?? buildIdleTtsMessage(modelCacheStatus)}</p>
                   <TtsResultDetails result={result} />
                 </div>
               </article>
@@ -609,44 +714,46 @@ function TtsResultDetails({ result }) {
   const testedAtLabel = formatTimestamp(result.testedAt);
 
   return (
-    <>
-      <dl className="tts-metrics">
+    <dl className="tts-metrics">
+      <div>
+        <dt>Sample</dt>
+        <dd>{result.sampleLabel}</dd>
+      </div>
+      <div>
+        <dt>Engine</dt>
+        <dd>{engineLabel}</dd>
+      </div>
+      {result.voiceName ? (
         <div>
-          <dt>Sample</dt>
-          <dd>{result.sampleLabel}</dd>
+          <dt>Voice</dt>
+          <dd>{result.voiceName}</dd>
         </div>
+      ) : null}
+      {result.loadMs !== null ? (
         <div>
-          <dt>Engine</dt>
-          <dd>{engineLabel}</dd>
+          <dt>Load</dt>
+          <dd>{formatMs(result.loadMs)}</dd>
         </div>
-        {result.loadMs !== null ? (
-          <div>
-            <dt>Load</dt>
-            <dd>{formatMs(result.loadMs)}</dd>
-          </div>
-        ) : null}
-        {result.synthMs !== null ? (
-          <div>
-            <dt>Generate</dt>
-            <dd>{formatMs(result.synthMs)}</dd>
-          </div>
-        ) : null}
-        {result.totalMs !== null ? (
-          <div>
-            <dt>Total</dt>
-            <dd>{formatMs(result.totalMs)}</dd>
-          </div>
-        ) : null}
-        {testedAtLabel ? (
-          <div>
-            <dt>Last</dt>
-            <dd>{testedAtLabel}</dd>
-          </div>
-        ) : null}
-      </dl>
-
-      {result.fallbackReason ? <p className="tts-reason">{result.fallbackReason}</p> : null}
-    </>
+      ) : null}
+      {result.synthMs !== null ? (
+        <div>
+          <dt>Generate</dt>
+          <dd>{formatMs(result.synthMs)}</dd>
+        </div>
+      ) : null}
+      {result.totalMs !== null ? (
+        <div>
+          <dt>Total</dt>
+          <dd>{formatMs(result.totalMs)}</dd>
+        </div>
+      ) : null}
+      {testedAtLabel ? (
+        <div>
+          <dt>Last</dt>
+          <dd>{testedAtLabel}</dd>
+        </div>
+      ) : null}
+    </dl>
   );
 }
 
@@ -662,7 +769,7 @@ function ViewHeader({ children, onBackToFeed, title }) {
         <h2>{title}</h2>
       </div>
 
-      {children ? <div className="view-header-actions">{children}</div> : null}
+      {children}
     </div>
   );
 }

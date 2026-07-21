@@ -2,7 +2,7 @@
 
 ## 1. Project Summary
 
-LangTok is a React learning project for exploring browser-local language AI. The app provides a short-form vertical feed of vocabulary words and useful phrases for a selected target language. Users can save items to a Word Wall, review them later, and hear pronunciation from a browser-side text-to-speech model.
+LangTok is a React learning project for exploring browser-local language AI. The app provides a short-form vertical feed of vocabulary words and useful phrases for a selected target language. Users can save items to a Word Wall, review them later, and hear pronunciation from browser-side Supertonic 3 text-to-speech.
 
 The project is intentionally scoped as a learning app. The goal is to understand how local browser inference works, how React coordinates long-running model work, and how to build a useful product experience around local generation, local TTS, and local persistence.
 
@@ -13,11 +13,11 @@ By the end of the project, the builder should understand:
 - How to scaffold and organize a React app for an AI-heavy browser experience.
 - How to create a mobile-first vertical feed with card-based interactions.
 - How to store saved learning items in browser storage.
-- How to run model work outside the main UI thread with Web Workers.
+- How to prepare and cache browser-side model assets.
+- How to run Supertonic 3 through ONNX Runtime Web.
 - How to use WebLLM for browser-local structured text generation.
-- How to compare browser-side TTS options across LiteRT.js, Supertonic web, and Transformers.js/MMS.
-- How to handle model loading progress, cache behavior, device limits, and graceful fallbacks.
 - How to validate LLM output before rendering it in the UI.
+- How to keep pronunciation audio, phonetic spelling, and displayed text aligned.
 
 ## 3. Target User
 
@@ -86,17 +86,18 @@ The first complete MVP should include:
 - Vertical feed layout.
 - Save and unsave actions.
 - Word Wall with local persistence.
-- A TTS test harness for Italian, Arabic, Farsi/Persian, and French.
-- One integrated local TTS path once the harness identifies the best browser-side option.
-- Basic model loading state.
+- Supertonic 3 TTS test harness for Italian, Arabic, and French.
+- Supertonic-only audio playback on feed cards and saved cards.
+- Browser Cache API preparation for Supertonic model assets.
+- Basic model loading, download, generation, and error states.
 
-The MVP should not require a backend, account system, payments, analytics, or cloud database.
+The MVP should not require a backend, account system, payments, analytics, cloud database, cloud TTS fallback, or system TTS fallback.
 
 ## 6. AI Scope
 
 ### 6.1 Text Generation
 
-Use WebLLM for browser-local generation after the static feed and Word Wall are working.
+Use WebLLM for browser-local generation after the static feed, Word Wall, and Supertonic TTS path are working.
 
 Primary local text model decision:
 
@@ -114,6 +115,8 @@ Generation responsibilities:
 - Respect the selected target language.
 - Produce beginner-friendly, practical learning content.
 - Include example sentences and English translations.
+- Include `ttsText` when the clean display text needs a more pronunciation-specific version.
+- Include phonetic spelling that matches the effective TTS input, not just the display text.
 
 Recommended generation strategy:
 
@@ -124,41 +127,46 @@ Recommended generation strategy:
 
 ### 6.2 Text-to-Speech
 
-Use a browser-local TTS adapter for pronunciation. Do not bind the UI directly to one model library. The app should expose one internal function such as `speak({ text, languageCode })`, then route that request to the best available local model for the selected language.
+Use Supertonic 3 as the active browser-local TTS engine. Do not use browser `SpeechSynthesis`, Google Cloud, a backend TTS service, MMS, or Transformers.js as a fallback in the MVP.
 
 Initial target languages:
 
 - Italian (`it`)
 - Arabic (`ar`)
-- Farsi/Persian (`fa` in the UI; many model repositories use ISO 639-3 `fas`)
 - French (`fr`)
+
+Removed from MVP:
+
+- Farsi/Persian is removed because Supertonic 3 documentation lists Italian, Arabic, and French but does not list Persian/Farsi.
 
 TTS responsibilities:
 
-- Load a language-appropriate TTS model.
-- Generate audio from the card target text.
-- Play generated audio in the browser.
-- Cache or reuse the loaded TTS runtime for the selected language.
-- Show loading and error states when a voice model is first loaded.
-- Keep TTS work outside fragile UI components, preferably in a service module first and a Web Worker once model loading becomes heavy.
+- Expose one internal function: `speak({ text, languageCode })`.
+- Route all audio requests to Supertonic 3.
+- Pre-download/cache Supertonic assets in the browser through the Cache API.
+- Load ONNX Runtime Web with WebGPU when available and WASM when WebGPU is unavailable.
+- Generate audio from `ttsText` when a card provides it.
+- Play generated audio with Web Audio.
+- Reuse the loaded Supertonic runtime after the first load.
+- Show model download, model load, generation, playback, and error states.
+- Keep TTS work in a service module first; move to a Web Worker later if main-thread performance becomes a problem.
+
+Pronunciation matching contract:
+
+- `targetText` is the clean text shown on the card.
+- `ttsText` is the exact text sent to Supertonic.
+- `phoneticSpelling` must describe how `ttsText` should sound.
+- For Arabic, use vocalized `ttsText` when needed, such as `شُكْرًا` for `شكرا` and `مِنْ فَضْلَك` for `من فضلك`.
+- If generation later produces `ttsText`, validation must check that `phoneticSpelling` is still aligned with that `ttsText`.
 
 Research findings:
 
-- LiteRT.js is a browser runtime for running `.tflite` models with WebGPU, WebNN, or WASM. It is not itself a ready-made TTS product, so LangTok still needs a compatible TTS model plus tokenization, audio decoding, and playback logic.
-- No single pure LiteRT browser-ready TTS model was found that clearly covers Italian, Arabic, Farsi/Persian, and French.
-- Supertonic 3 is the strongest first candidate for natural browser-side multilingual TTS. It is a 99M-parameter ONNX Runtime model with a browser example through `@supertone/supertonic-web`. Its documented language list includes Italian, Arabic, and French, but does not list Farsi/Persian.
-- Qwen3-TTS LiteRT is useful to study because it is a real LiteRT TTS conversion, but it is not the first implementation target. The LiteRT model card lists 10 languages and the documented base coverage includes Italian and French, but not Arabic or Farsi/Persian. The current sample path is Python/Android-oriented and large enough that it should be treated as a later research spike.
-- MMS-TTS through Transformers.js/ONNX is the best fallback family to investigate for language coverage. Browser-compatible ONNX models are confirmed for Arabic and French through Xenova model repositories. Persian exists as `facebook/mms-tts-fas`, but a browser-compatible ONNX path must be verified or converted before integration. Italian MMS-TTS browser support was not confirmed, so Italian should start with Supertonic or Qwen research instead.
-
-Recommended TTS strategy:
-
-- Build a small TTS harness before wiring the production audio button.
-- Test one short word and one short phrase for Italian, Arabic, Farsi/Persian, and French.
-- Record model size, first-load time, repeat-play latency, browser support, audio quality, and licensing constraints.
-- Try Supertonic 3 web first for Italian, Arabic, and French.
-- Use MMS-TTS/Transformers.js as the primary fallback path for Arabic, French, and especially Farsi/Persian.
-- Keep Qwen3-TTS LiteRT as a later LiteRT-specific learning spike, not as the MVP dependency.
-- Use browser `SpeechSynthesis` only as a clearly labeled fallback for unsupported devices or missing local model coverage.
+- Supertonic 3 is the strongest first candidate for natural browser-side multilingual TTS.
+- Its browser example runs with `onnxruntime-web` and expects ONNX model assets plus voice-style JSON files.
+- The documented language list includes Italian, Arabic, and French.
+- The documented language list does not include Persian/Farsi, so Farsi is out of scope for the current MVP.
+- LiteRT.js remains useful to study as a browser runtime, but no single pure LiteRT browser-ready TTS model was found that clearly covers the current MVP language needs better than Supertonic 3.
+- MMS/Transformers.js is removed from active implementation because Arabic pronunciation was rejected in user testing and the earlier Farsi path failed.
 
 Candidate model map:
 
@@ -166,30 +174,37 @@ Candidate model map:
 {
   "it": {
     "label": "Italian",
-    "primaryTts": "supertonic-web",
-    "fallbackTts": null,
-    "status": "candidate"
+    "primaryTts": "supertonic-3",
+    "supertonicLang": "it",
+    "status": "enabled"
   },
   "ar": {
     "label": "Arabic",
-    "primaryTts": "supertonic-web",
-    "fallbackTts": "Xenova/mms-tts-ara",
-    "status": "candidate"
-  },
-  "fa": {
-    "label": "Farsi",
-    "primaryTts": "mms-tts",
-    "fallbackTts": "browser-speech-synthesis",
-    "modelToValidate": "facebook/mms-tts-fas",
-    "status": "needs browser-compatible ONNX validation"
+    "primaryTts": "supertonic-3",
+    "supertonicLang": "ar",
+    "status": "enabled with vocalized ttsText for key samples"
   },
   "fr": {
     "label": "French",
-    "primaryTts": "supertonic-web",
-    "fallbackTts": "Xenova/mms-tts-fra",
-    "status": "candidate"
+    "primaryTts": "supertonic-3",
+    "supertonicLang": "fr",
+    "status": "enabled"
   }
 }
+```
+
+Browser assets:
+
+```json
+[
+  "onnx/tts.json",
+  "onnx/unicode_indexer.json",
+  "onnx/duration_predictor.onnx",
+  "onnx/text_encoder.onnx",
+  "onnx/vector_estimator.onnx",
+  "onnx/vocoder.onnx",
+  "voice_styles/M1.json"
+]
 ```
 
 ## 7. Suggested Tech Stack
@@ -198,12 +213,12 @@ Candidate model map:
 - Vite for local development and bundling.
 - Plain CSS or CSS modules for styling.
 - WebLLM for local LLM generation.
-- Supertonic web as the first local natural TTS candidate.
-- Transformers.js/MMS for fallback TTS coverage.
-- LiteRT.js for `.tflite` model experiments and later TTS research spikes.
-- Web Workers for model operations.
+- ONNX Runtime Web for Supertonic 3 inference.
+- Supertonic 3 as the active browser-local TTS model.
+- Browser Cache API for model asset preparation.
+- Web Workers for later heavy model operations.
 - IndexedDB for saved cards and generated history.
-- localStorage for lightweight preferences.
+- localStorage for lightweight preferences and current prototype persistence.
 
 ## 8. Data Model
 
@@ -215,6 +230,7 @@ Candidate model map:
   "language": "Italian",
   "languageCode": "it",
   "targetText": "ancora",
+  "ttsText": "ancora",
   "translation": "still / again",
   "phoneticSpelling": "ahn-KOH-rah",
   "example": "Sto ancora imparando.",
@@ -231,13 +247,14 @@ Candidate model map:
 
 ```json
 {
-  "label": "Italian",
-  "code": "it",
-  "generationName": "Italian",
+  "label": "Arabic",
+  "code": "ar",
+  "generationName": "Arabic",
+  "direction": "rtl",
   "tts": {
-    "primary": "supertonic-web",
-    "fallback": null,
-    "status": "candidate"
+    "primary": "supertonic-3",
+    "supertonicLang": "ar",
+    "status": "enabled"
   },
   "enabled": true
 }
@@ -270,7 +287,19 @@ Main UI elements:
 - Entry point into Review Mode.
 - Optional language filter only if saved items across multiple languages become hard to scan.
 
-### 9.3 Review Screen
+### 9.3 TTS Harness
+
+Primary route or view: `/tts`
+
+Main UI elements:
+
+- Compact language test cards for Italian, Arabic, and French.
+- Download/prepare button for Supertonic model assets.
+- Word and phrase audio buttons.
+- Visible phonetic guide for each test sample.
+- Latest result metrics.
+
+### 9.4 Review Screen
 
 Primary route or view: `/review`
 
@@ -285,13 +314,6 @@ Main UI elements:
 ## 10. Implementation Milestones
 
 ### Milestone 1: Static Product Skeleton
-
-Learning focus:
-
-- React components.
-- App state.
-- Mobile-first layout.
-- Vertical feed ergonomics.
 
 Deliverables:
 
@@ -310,12 +332,6 @@ Acceptance criteria:
 
 ### Milestone 2: Word Wall Persistence
 
-Learning focus:
-
-- Persistent browser state.
-- Save and unsave flows.
-- Separating app state from view state.
-
 Deliverables:
 
 - Save button on feed cards.
@@ -331,43 +347,39 @@ Acceptance criteria:
 - Saved cards are shown alphabetically by target text.
 - Reloading the page preserves saved cards.
 
-### Milestone 3: Local TTS Prototype
+### Milestone 3: Supertonic Local TTS
 
 Learning focus:
 
-- Browser-side model runtime tradeoffs.
-- Supertonic web setup.
-- Transformers.js/MMS fallback setup.
-- LiteRT.js feasibility testing.
-- Model loading progress.
+- Browser-side model asset preparation.
+- Cache API model storage.
+- ONNX Runtime Web setup.
+- WebGPU/WASM runtime behavior.
 - Audio playback from generated model output.
-- Browser model performance constraints.
+- Pronunciation guide alignment.
 
 Deliverables:
 
 - TTS service module with a stable `speak({ text, languageCode })` interface.
-- TTS test harness for Italian, Arabic, Farsi/Persian, and French.
-- Documented model results for each initial language.
-- One working integrated local TTS path after the harness proves the best candidate.
-- Audio playback button.
+- Supertonic runtime module.
+- TTS test harness for Italian, Arabic, and French.
+- Browser model asset cache status.
+- Integrated Supertonic audio playback button.
 - Loading and error states.
+- Arabic `ttsText` values with diacritics for key samples.
 
 Acceptance criteria:
 
-- Clicking audio loads the model if needed.
-- The app plays generated pronunciation audio.
-- The UI remains responsive while audio is prepared.
-- The harness records whether each initial language is supported by the selected local TTS path.
+- Clicking audio uses Supertonic 3, not system TTS.
+- The app does not attempt rejected Arabic/Farsi MMS paths.
+- The app does not use system voice fallback.
+- Farsi is not shown in the language dropdown.
+- Arabic `شكرا` speaks from `شُكْرًا` and shows a matching `SHOOK-ran` guide.
+- Arabic `من فضلك` speaks from `مِنْ فَضْلَك` and shows a matching `min FAD-lak` guide.
+- The UI remains responsive enough while audio is prepared.
+- The harness records model id, backend, voice style, load time, generation time, total time, and timestamp.
 
 ### Milestone 4: WebLLM Generation Prototype
-
-Learning focus:
-
-- WebLLM model loading.
-- Gemma-family browser compatibility checks.
-- Prompt design.
-- Structured JSON generation.
-- Runtime validation.
 
 Deliverables:
 
@@ -382,15 +394,9 @@ Acceptance criteria:
 - User can generate a new batch for the selected language.
 - Invalid model output is rejected safely.
 - Generated cards match the app schema.
+- Generated phonetic spelling describes the same text sent to TTS.
 
 ### Milestone 5: Infinite Feed
-
-Learning focus:
-
-- Intersection Observer or scroll threshold logic.
-- Request queues.
-- Duplicate prevention.
-- Async state machines.
 
 Deliverables:
 
@@ -405,12 +411,6 @@ Acceptance criteria:
 - Duplicate cards are minimized.
 
 ### Milestone 6: Review Mode
-
-Learning focus:
-
-- Derived state.
-- Simple review workflows.
-- User progress tracking.
 
 Deliverables:
 
@@ -439,8 +439,9 @@ Return only valid JSON with this shape:
   "cards": [
     {
       "targetText": "string",
+      "ttsText": "string, optional; exact text to speak",
       "translation": "string",
-      "phoneticSpelling": "string",
+      "phoneticSpelling": "string; must describe ttsText when ttsText exists",
       "example": "string",
       "exampleTranslation": "string"
     }
@@ -454,7 +455,10 @@ Do not include duplicates. Do not include offensive, adult, or overly obscure co
 Generated cards must be rejected unless:
 
 - `targetText`, `translation`, `example`, and `exampleTranslation` are non-empty strings.
+- `languageCode` is one of `it`, `ar`, or `fr`.
+- `ttsText` is optional, but when present it must be a non-empty string intended for pronunciation rather than display.
 - `phoneticSpelling` is either absent or a non-empty string explaining how to say the item phonetically.
+- The phonetic spelling is reviewed against `ttsText` when `ttsText` exists.
 - The target text is not already present in the current session for the selected language.
 
 ## 13. UX Principles
@@ -471,58 +475,58 @@ Generated cards must be rejected unless:
 
 - No user accounts in the learning project.
 - No backend API for the MVP.
+- No Google Cloud TTS.
+- No system TTS fallback.
+- No MMS/Transformers.js fallback.
+- No Farsi/Persian in the current MVP.
 - No social feed, follows, likes, comments, or public sharing.
 - No payment or subscription system.
 - No formal spaced repetition algorithm until the basic review flow works.
-- No claim that generated content is a complete curriculum.
 
 ## 15. Risks And Constraints
 
 - Browser-local models can be large and slow to load the first time.
+- Hugging Face asset hosting and CORS behavior must keep working for first-run model preparation.
+- Browser Cache API storage can be cleared by the browser.
 - WebGPU support varies across browsers and devices.
-- TTS model quality and language coverage vary.
-- No confirmed single pure LiteRT browser TTS path currently covers Italian, Arabic, Farsi/Persian, and French.
-- Supertonic 3 covers several target languages but does not list Farsi/Persian in its supported language list.
-- Qwen3-TTS LiteRT is large and not yet a simple browser drop-in integration path.
-- MMS-TTS has broad language coverage, but browser-ready ONNX availability must be verified per language.
-- Model licenses differ. Review Supertonic, MMS, Qwen, and any converted model licenses before commercial use.
+- WASM fallback can be slower than WebGPU.
+- TTS model quality can vary by language and sample.
+- Supertonic 3 does not list Persian/Farsi in its supported language list.
 - Local LLM output may be malformed or linguistically imperfect.
 - Running both LLM generation and TTS in the same browser session can be memory-intensive.
+- Model licenses differ. Review Supertonic and any future model license before commercial use.
 
 Mitigations:
 
 - Start with static cards.
 - Add one local model at a time.
-- Use workers for model work.
 - Keep TTS behind an adapter so model choices can change without redesigning the app.
-- Run a browser TTS harness before committing to one voice stack.
+- Cache model assets explicitly and show cache state.
+- Run a browser TTS harness before trusting generated language samples.
 - Validate all generated data.
 - Show model loading progress and retry states.
-- Keep model choices configurable.
+- Move TTS into a Worker if main-thread performance becomes unacceptable.
 
 ## 16. Documentation References
 
 - WebLLM Basic Usage: https://webllm.mlc.ai/docs/user/basic_usage.html
 - WebLLM Advanced Use Cases: https://webllm.mlc.ai/docs/user/advanced_usage.html
-- LiteRT.js Get Started: https://developers.google.com/edge/litert/web/get_started
 - Supertonic 3 Overview: https://supertonic3.github.io/
 - Supertonic GitHub Repository: https://github.com/supertone-inc/supertonic
-- Qwen3-TTS LiteRT model: https://huggingface.co/litert-community/Qwen3-TTS-12Hz-0.6B-Base
-- Transformers.js Overview: https://huggingface.co/docs/transformers.js/index
-- MMS-TTS model collection: https://huggingface.co/facebook/mms-tts
-- Persian MMS-TTS model: https://huggingface.co/facebook/mms-tts-fas
-- Arabic MMS-TTS ONNX model: https://huggingface.co/Xenova/mms-tts-ara
-- French MMS-TTS ONNX model: https://huggingface.co/Xenova/mms-tts-fra
+- Supertonic 3 Hugging Face model assets: https://huggingface.co/Supertone/supertonic-3
+- ONNX Runtime Web: https://onnxruntime.ai/docs/tutorials/web/
+- MDN Cache API: https://developer.mozilla.org/en-US/docs/Web/API/Cache
+- MDN Web Audio API: https://developer.mozilla.org/en-US/docs/Web/API/Web_Audio_API
 - MDN Web Workers: https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API/Using_web_workers
-- MDN SpeechSynthesis fallback API: https://developer.mozilla.org/en-US/docs/Web/API/SpeechSynthesis
 
 ## 17. Definition Of Done For The Learning Project
 
 The learning project is complete when:
 
-- A user can choose a language.
+- A user can choose Italian, Arabic, or French.
 - A user can scroll through a feed of vocabulary and phrase cards.
-- A user can hear pronunciation for cards using local model-backed TTS where supported.
+- A user can hear pronunciation for cards using Supertonic 3 in the browser.
+- Pronunciation audio uses `ttsText` when present and matches the phonetic guide.
 - A user can save cards to the Word Wall.
 - Saved cards persist locally.
 - A user can review saved cards.

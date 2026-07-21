@@ -278,6 +278,8 @@ button:disabled {
 
 .view-header-actions {
   display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
   justify-content: flex-end;
 }
 
@@ -405,6 +407,11 @@ button:disabled {
   overflow-wrap: anywhere;
 }
 
+.tts-samples small {
+  color: #7a756d;
+  font-weight: 800;
+}
+
 .tts-actions {
   display: flex;
   flex-wrap: wrap;
@@ -420,6 +427,10 @@ button:disabled {
   min-height: 74px;
   border-top: 1px solid #eee9de;
   padding-top: 14px;
+}
+
+.tts-result.error p {
+  color: #8b3b31;
 }
 
 .tts-metrics {
