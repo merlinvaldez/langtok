@@ -16,6 +16,7 @@ This repository currently contains the start of the third implementation milesto
 - TTS adapter with a stable `speak({ text, languageCode })` path.
 - Worker-backed MMS/Transformers.js synthesis where a browser-compatible model is configured.
 - Compact TTS test harness for the initial four languages.
+- Persistent TTS result log backed by `localStorage`.
 - System voice fallback for languages that do not yet have a confirmed browser model path.
 
 ## Planned Learning Milestones
@@ -65,6 +66,8 @@ npm run build
 Open the speaker icon in the header to test the current TTS harness. Arabic and French are wired to browser-compatible MMS models through Transformers.js. Farsi attempts the Meta MMS Persian model so we can validate whether the current browser runtime can load it directly. Italian currently uses the system voice fallback while the Supertonic 3 browser asset path is tested.
 
 The first model-backed TTS run downloads model assets into the browser cache, so the first click can take much longer than repeat playback.
+
+The harness stores the latest result per language in `localStorage` under `langtok:ttsResults`. Each entry records the tested sample, engine, model id, load time, generation time, total time, fallback reason, and timestamp.
 
 ## Project Status
 

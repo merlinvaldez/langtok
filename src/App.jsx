@@ -1,10 +1,19 @@
-import { ArrowLeft, Bookmark, BookmarkCheck, Grid2X2, Languages, Volume2 } from "lucide-react";
+import {
+  ArrowLeft,
+  Bookmark,
+  BookmarkCheck,
+  Grid2X2,
+  Languages,
+  Trash2,
+  Volume2,
+} from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { LANGUAGES, SAMPLE_CARDS } from "./data.js";
 import { getTtsLanguageConfig, TTS_TEST_CASES } from "./ttsConfig.js";
 import { getTtsEngineLabel, speak } from "./ttsService.js";
 
 const SAVED_CARD_IDS_STORAGE_KEY = "langtok:savedCardIds";
+const TTS_RESULTS_STORAGE_KEY = "langtok:ttsResults";
 const SPEECH_STATUS_CLEAR_DELAY_MS = 5200;
 
 function loadSavedCardIds() {
@@ -16,6 +25,23 @@ function loadSavedCardIds() {
   } catch {
     return [];
   }
+}
+
+function loadTtsResults() {
+  try {
+    const savedValue = window.localStorage.getItem(TTS_RESULTS_STORAGE_KEY);
+    const parsedValue = savedValue ? JSON.parse(savedValue) : {};
+
+    return parsedValue && typeof parsedValue === "object" && !Array.isArray(parsedValue)
+      ? parsedValue
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function persistTtsResults(results) {
+  window.localStorage.setItem(TTS_RESULTS_STORAGE_KEY, JSON.stringify(results));
 }
 
 function getLanguageDirection(languageCode) {
@@ -36,6 +62,19 @@ function formatMs(milliseconds) {
   }
 
   return milliseconds >= 1000 ? `${(milliseconds / 1000).toFixed(1)}s` : `${milliseconds}ms`;
+}
+
+function formatTimestamp(timestamp) {
+  if (!timestamp) {
+    return "";
+  }
+
+  return new Intl.DateTimeFormat(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+    month: "short",
+    day: "numeric",
+  }).format(new Date(timestamp));
 }
 
 function buildSpeechStatusMessage(languageConfig, status) {
@@ -62,13 +101,34 @@ function buildResultMessage(languageConfig, result) {
   )}, generated ${formatMs(result.metrics?.synthMs)}`;
 }
 
+function buildTtsLogEntry({ languageCode, message, result, sampleLabel, text, tone }) {
+  const testedAt = new Date().toISOString();
+
+  return {
+    engine: result?.engine ?? null,
+    engineLabel: result ? getTtsEngineLabel(result) : null,
+    fallbackReason: result?.fallbackReason ?? null,
+    languageCode,
+    loadMs: result?.metrics?.loadMs ?? null,
+    message,
+    modelId: result?.modelId ?? null,
+    sampleLabel,
+    samplingRate: result?.samplingRate ?? null,
+    synthMs: result?.metrics?.synthMs ?? null,
+    testedAt,
+    text,
+    tone,
+    totalMs: result?.metrics?.totalMs ?? null,
+  };
+}
+
 function App() {
   const [selectedLanguage, setSelectedLanguage] = useState("it");
   const [savedCardIds, setSavedCardIds] = useState(loadSavedCardIds);
   const [activeView, setActiveView] = useState("feed");
   const [activeSpeechKey, setActiveSpeechKey] = useState(null);
   const [speechStatus, setSpeechStatus] = useState(null);
-  const [ttsResults, setTtsResults] = useState({});
+  const [ttsResults, setTtsResults] = useState(loadTtsResults);
 
   const visibleCards = useMemo(
     () => SAMPLE_CARDS.filter((card) => card.languageCode === selectedLanguage),
@@ -109,6 +169,26 @@ function App() {
     );
   }
 
+  function updateTtsResult(resultKey, result, shouldPersist = false) {
+    setTtsResults((currentResults) => {
+      const nextResults = {
+        ...currentResults,
+        [resultKey]: result,
+      };
+
+      if (shouldPersist) {
+        persistTtsResults(nextResults);
+      }
+
+      return nextResults;
+    });
+  }
+
+  function clearTtsResults() {
+    window.localStorage.removeItem(TTS_RESULTS_STORAGE_KEY);
+    setTtsResults({});
+  }
+
   async function handleSpeak({ languageCode, resultKey, sampleLabel, speechKey, text }) {
     const languageConfig = getTtsLanguageConfig(languageCode);
     const initialMessage = languageConfig
@@ -122,14 +202,13 @@ function App() {
     });
 
     if (resultKey) {
-      setTtsResults((currentResults) => ({
-        ...currentResults,
-        [resultKey]: {
-          message: initialMessage,
-          sampleLabel,
-          tone: "loading",
-        },
-      }));
+      updateTtsResult(resultKey, {
+        languageCode,
+        message: initialMessage,
+        sampleLabel,
+        text,
+        tone: "loading",
+      });
     }
 
     try {
@@ -144,14 +223,13 @@ function App() {
           });
 
           if (resultKey) {
-            setTtsResults((currentResults) => ({
-              ...currentResults,
-              [resultKey]: {
-                message,
-                sampleLabel,
-                tone: "loading",
-              },
-            }));
+            updateTtsResult(resultKey, {
+              languageCode,
+              message,
+              sampleLabel,
+              text,
+              tone: "loading",
+            });
           }
         },
         text,
@@ -165,16 +243,18 @@ function App() {
       });
 
       if (resultKey) {
-        setTtsResults((currentResults) => ({
-          ...currentResults,
-          [resultKey]: {
-            fallbackReason: result.fallbackReason,
+        updateTtsResult(
+          resultKey,
+          buildTtsLogEntry({
+            languageCode,
             message,
             result,
             sampleLabel,
+            text,
             tone: result.engine === "speech-synthesis" ? "fallback" : "success",
-          },
-        }));
+          }),
+          true,
+        );
       }
     } catch (error) {
       const message = languageConfig
@@ -187,14 +267,18 @@ function App() {
       });
 
       if (resultKey) {
-        setTtsResults((currentResults) => ({
-          ...currentResults,
-          [resultKey]: {
+        updateTtsResult(
+          resultKey,
+          buildTtsLogEntry({
+            languageCode,
             message,
+            result: null,
             sampleLabel,
+            text,
             tone: "error",
-          },
-        }));
+          }),
+          true,
+        );
       }
     } finally {
       setActiveSpeechKey((currentKey) => (currentKey === speechKey ? null : currentKey));
@@ -271,6 +355,7 @@ function App() {
       {activeView === "tts" ? (
         <TtsHarness
           activeSpeechKey={activeSpeechKey}
+          onClearResults={clearTtsResults}
           onBackToFeed={() => setActiveView("feed")}
           onSpeak={handleSpeak}
           results={ttsResults}
@@ -423,11 +508,20 @@ function WordWall({ activeSpeechKey, onBackToFeed, onSpeak, onToggleSaved, saved
   );
 }
 
-function TtsHarness({ activeSpeechKey, onBackToFeed, onSpeak, results }) {
+function TtsHarness({ activeSpeechKey, onBackToFeed, onClearResults, onSpeak, results }) {
+  const hasResults = Object.keys(results).length > 0;
+
   return (
     <section className="tts-harness" aria-label="TTS test harness">
       <div className="tts-harness-inner">
-        <ViewHeader onBackToFeed={onBackToFeed} title="TTS" />
+        <ViewHeader onBackToFeed={onBackToFeed} title="TTS">
+          {hasResults ? (
+            <button className="clear-button" type="button" onClick={onClearResults}>
+              <Trash2 aria-hidden="true" size={17} />
+              <span>Clear</span>
+            </button>
+          ) : null}
+        </ViewHeader>
 
         <div className="tts-grid">
           {TTS_TEST_CASES.map((testCase) => {
@@ -495,7 +589,7 @@ function TtsHarness({ activeSpeechKey, onBackToFeed, onSpeak, results }) {
 
                 <div className={`tts-result ${result?.tone ?? "idle"}`} aria-live="polite">
                   <p>{result?.message ?? `${testCase.status}: ${testCase.note}`}</p>
-                  {result?.fallbackReason ? <p>{result.fallbackReason}</p> : null}
+                  <TtsResultDetails result={result} />
                 </div>
               </article>
             );
@@ -506,7 +600,57 @@ function TtsHarness({ activeSpeechKey, onBackToFeed, onSpeak, results }) {
   );
 }
 
-function ViewHeader({ onBackToFeed, title }) {
+function TtsResultDetails({ result }) {
+  if (!result || result.tone === "loading") {
+    return null;
+  }
+
+  const engineLabel = result.engineLabel ?? "not recorded";
+  const testedAtLabel = formatTimestamp(result.testedAt);
+
+  return (
+    <>
+      <dl className="tts-metrics">
+        <div>
+          <dt>Sample</dt>
+          <dd>{result.sampleLabel}</dd>
+        </div>
+        <div>
+          <dt>Engine</dt>
+          <dd>{engineLabel}</dd>
+        </div>
+        {result.loadMs !== null ? (
+          <div>
+            <dt>Load</dt>
+            <dd>{formatMs(result.loadMs)}</dd>
+          </div>
+        ) : null}
+        {result.synthMs !== null ? (
+          <div>
+            <dt>Generate</dt>
+            <dd>{formatMs(result.synthMs)}</dd>
+          </div>
+        ) : null}
+        {result.totalMs !== null ? (
+          <div>
+            <dt>Total</dt>
+            <dd>{formatMs(result.totalMs)}</dd>
+          </div>
+        ) : null}
+        {testedAtLabel ? (
+          <div>
+            <dt>Last</dt>
+            <dd>{testedAtLabel}</dd>
+          </div>
+        ) : null}
+      </dl>
+
+      {result.fallbackReason ? <p className="tts-reason">{result.fallbackReason}</p> : null}
+    </>
+  );
+}
+
+function ViewHeader({ children, onBackToFeed, title }) {
   return (
     <div className="view-header">
       <button className="back-button" type="button" onClick={onBackToFeed}>
@@ -517,6 +661,8 @@ function ViewHeader({ onBackToFeed, title }) {
       <div>
         <h2>{title}</h2>
       </div>
+
+      {children ? <div className="view-header-actions">{children}</div> : null}
     </div>
   );
 }

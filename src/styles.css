@@ -261,7 +261,9 @@ button:disabled {
   letter-spacing: 0;
 }
 
-.back-button {
+.back-button,
+.sample-button,
+.clear-button {
   display: inline-flex;
   align-items: center;
   gap: 8px;
@@ -272,6 +274,11 @@ button:disabled {
   color: #151515;
   padding: 0 14px;
   font-weight: 800;
+}
+
+.view-header-actions {
+  display: flex;
+  justify-content: flex-end;
 }
 
 .empty-state {
@@ -404,20 +411,8 @@ button:disabled {
   gap: 10px;
 }
 
-.sample-button {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  min-height: 42px;
-  border: 1px solid #ded8cc;
-  border-radius: 8px;
-  background: #ffffff;
-  color: #151515;
-  padding: 0 14px;
-  font-weight: 800;
-}
-
-.sample-button:hover {
+.sample-button:hover,
+.clear-button:hover {
   border-color: #151515;
 }
 
@@ -427,7 +422,33 @@ button:disabled {
   padding-top: 14px;
 }
 
-.tts-result p + p {
+.tts-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 12px;
+  margin: 12px 0 0;
+}
+
+.tts-metrics div {
+  min-width: 0;
+}
+
+.tts-metrics dt {
+  color: #7a756d;
+  font-size: 0.7rem;
+  font-weight: 900;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.tts-metrics dd {
+  margin: 1px 0 0;
+  color: #252525;
+  font-weight: 750;
+  overflow-wrap: anywhere;
+}
+
+.tts-reason {
   margin-top: 6px;
   color: #8b3b31;
   font-size: 0.9rem;
@@ -513,6 +534,11 @@ button:disabled {
 
   .view-header {
     align-items: flex-start;
-    flex-direction: column-reverse;
+    flex-direction: column;
+  }
+
+  .view-header-actions {
+    width: 100%;
+    justify-content: flex-start;
   }
 }
