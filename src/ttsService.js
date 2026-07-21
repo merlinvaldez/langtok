@@ -78,6 +78,12 @@ export async function prepareTtsModel({ onStatus } = {}) {
   };
 }
 
+export async function cacheTtsModelAssets({ onStatus } = {}) {
+  const supertonic = await getSupertonicModule();
+
+  return supertonic.preloadSupertonicAssets({ onStatus });
+}
+
 export async function speak({ languageCode, onStatus, text }) {
   const languageConfig = getTtsLanguageConfig(languageCode);
 

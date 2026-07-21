@@ -62,7 +62,18 @@ async function getCachedResponse(path) {
   return cache.match(assetUrl(path));
 }
 
-async function fetchAsset(asset, onStatus) {
+function buildAssetProgress({ assetIndex, assetTotal, loadedBytes, totalBytes }) {
+  if (!assetIndex || !assetTotal) {
+    return totalBytes ? Math.min(loadedBytes / totalBytes, 1) : 0;
+  }
+
+  const completedAssets = assetIndex - 1;
+  const currentAssetProgress = totalBytes ? Math.min(loadedBytes / totalBytes, 1) : 0;
+
+  return Math.min((completedAssets + currentAssetProgress) / assetTotal, 1);
+}
+
+async function fetchAsset(asset, onStatus, context = {}) {
   const url = assetUrl(asset.path);
   const cache = await openModelCache();
   const cachedResponse = cache ? await cache.match(url) : null;
@@ -72,8 +83,16 @@ async function fetchAsset(asset, onStatus) {
   }
 
   onStatus?.({
+    assetIndex: context.assetIndex,
+    assetTotal: context.assetTotal,
     message: `Downloading ${asset.label}`,
     phase: "download",
+    progress: buildAssetProgress({
+      assetIndex: context.assetIndex,
+      assetTotal: context.assetTotal,
+      loadedBytes: 0,
+      totalBytes: 0,
+    }),
     source: "supertonic",
   });
 
@@ -84,7 +103,41 @@ async function fetchAsset(asset, onStatus) {
   }
 
   if (cache) {
-    await cache.put(url, response.clone());
+    const cacheWrite = cache.put(url, response.clone());
+    const totalBytes = Number(response.headers.get("content-length")) || 0;
+
+    if (response.body) {
+      const reader = response.body.getReader();
+      let loadedBytes = 0;
+
+      for (;;) {
+        const { done, value } = await reader.read();
+
+        if (done) {
+          break;
+        }
+
+        loadedBytes += value.byteLength;
+        onStatus?.({
+          assetIndex: context.assetIndex,
+          assetTotal: context.assetTotal,
+          loadedBytes,
+          message: `Downloading ${asset.label}`,
+          phase: "download",
+          progress: buildAssetProgress({
+            assetIndex: context.assetIndex,
+            assetTotal: context.assetTotal,
+            loadedBytes,
+            totalBytes,
+          }),
+          source: "supertonic",
+          totalBytes,
+        });
+      }
+    }
+
+    await cacheWrite;
+    return cache.match(url);
   }
 
   return response;
@@ -136,7 +189,10 @@ export async function preloadSupertonicAssets({ onStatus } = {}) {
     const cachedResponse = await getCachedResponse(asset.path);
 
     if (!cachedResponse) {
-      const response = await fetchAsset(asset, onStatus);
+      const response = await fetchAsset(asset, onStatus, {
+        assetIndex: index + 1,
+        assetTotal: MODEL_ASSETS.length,
+      });
 
       if (asset.type === "json") {
         await response.text();
@@ -149,6 +205,7 @@ export async function preloadSupertonicAssets({ onStatus } = {}) {
       cachedCount: index + 1,
       message: `Cached ${index + 1}/${MODEL_ASSETS.length}`,
       phase: "cache",
+      progress: (index + 1) / MODEL_ASSETS.length,
       source: "supertonic",
       total: MODEL_ASSETS.length,
     });

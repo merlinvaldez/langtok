@@ -5,13 +5,16 @@ import {
   Download,
   Grid2X2,
   Languages,
+  Sparkles,
   Trash2,
   Volume2,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { LANGUAGES, SAMPLE_CARDS } from "./data.js";
+import { generateLanguageCards, getGemmaCacheStatus, preloadGemmaModel } from "./generationService.js";
 import { TTS_TEST_CASES, getTtsLanguageConfig } from "./ttsConfig.js";
 import {
+  cacheTtsModelAssets,
   getSupertonicCacheStatus,
   getTtsEngineLabel,
   prepareTtsModel,
@@ -19,6 +22,8 @@ import {
 } from "./ttsService.js";
 
 const SAVED_CARD_IDS_STORAGE_KEY = "langtok:savedCardIds";
+const GENERATED_CARDS_STORAGE_KEY = "langtok:generatedCards";
+const GENERATED_CARDS_STORAGE_VERSION = 1;
 const TTS_RESULTS_STORAGE_KEY = "langtok:ttsResults";
 const TTS_RESULTS_STORAGE_VERSION = 4;
 const SPEECH_STATUS_CLEAR_DELAY_MS = 5200;
@@ -50,6 +55,63 @@ function loadTtsResults() {
     return parsedValue.results && typeof parsedValue.results === "object" ? parsedValue.results : {};
   } catch {
     return {};
+  }
+}
+
+function loadGeneratedCardsByLanguage() {
+  try {
+    const savedValue = window.localStorage.getItem(GENERATED_CARDS_STORAGE_KEY);
+    const parsedValue = savedValue ? JSON.parse(savedValue) : {};
+
+    if (!parsedValue || typeof parsedValue !== "object" || Array.isArray(parsedValue)) {
+      return {};
+    }
+
+    if (parsedValue.version !== GENERATED_CARDS_STORAGE_VERSION) {
+      return {};
+    }
+
+    return parsedValue.cardsByLanguage && typeof parsedValue.cardsByLanguage === "object"
+      ? sanitizeGeneratedCardsByLanguage(parsedValue.cardsByLanguage)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function sanitizeGeneratedCardsByLanguage(cardsByLanguage) {
+  const validLanguageCodes = new Set(LANGUAGES.map((language) => language.code));
+  const sanitizedCardsByLanguage = {};
+
+  for (const [languageCode, cards] of Object.entries(cardsByLanguage)) {
+    if (!validLanguageCodes.has(languageCode) || !Array.isArray(cards)) {
+      continue;
+    }
+
+    sanitizedCardsByLanguage[languageCode] = cards.filter(
+      (card) =>
+        card &&
+        typeof card === "object" &&
+        card.id &&
+        card.targetText &&
+        card.languageCode === languageCode,
+    );
+  }
+
+  return sanitizedCardsByLanguage;
+}
+
+function persistGeneratedCardsByLanguage(cardsByLanguage) {
+  try {
+    window.localStorage.setItem(
+      GENERATED_CARDS_STORAGE_KEY,
+      JSON.stringify({
+        cardsByLanguage,
+        version: GENERATED_CARDS_STORAGE_VERSION,
+      }),
+    );
+  } catch (error) {
+    console.warn("LangTok could not persist generated cards.", error);
   }
 }
 
@@ -145,10 +207,129 @@ function buildTtsLogEntry({ languageCode, message, result, sampleLabel, text, to
   };
 }
 
+function clampProgress(value) {
+  if (typeof value !== "number" || Number.isNaN(value)) {
+    return 0;
+  }
+
+  return Math.min(Math.max(value, 0), 1);
+}
+
+function formatBytes(bytes) {
+  if (!bytes) {
+    return "";
+  }
+
+  if (bytes >= 1024 * 1024 * 1024) {
+    return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+  }
+
+  if (bytes >= 1024 * 1024) {
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  }
+
+  return `${Math.round(bytes / 1024)} KB`;
+}
+
+function createSetupDependency(label) {
+  return {
+    cached: false,
+    cachedCount: 0,
+    checked: false,
+    label,
+    loadedBytes: 0,
+    message: "Checking",
+    progress: 0,
+    supportsCache: true,
+    supportsWebGpu: true,
+    total: 1,
+    totalBytes: 0,
+  };
+}
+
+function createInitialSetupStatus() {
+  return {
+    dependencies: {
+      gemma: createSetupDependency("Gemma 4 E2B"),
+      supertonic: createSetupDependency("Supertonic 3"),
+    },
+    error: "",
+    phase: "checking",
+  };
+}
+
+function progressFromCacheStatus(status, fallbackProgress = 0) {
+  if (typeof status.progress === "number") {
+    return status.progress;
+  }
+
+  if (status.cached) {
+    return 1;
+  }
+
+  if (status.total) {
+    return (status.cachedCount ?? 0) / status.total;
+  }
+
+  return fallbackProgress;
+}
+
+function mergeDependencyStatus(currentDependency, status) {
+  const progress = progressFromCacheStatus(status, currentDependency.progress);
+
+  return {
+    ...currentDependency,
+    cached: status.cached ?? currentDependency.cached,
+    cachedCount: status.cachedCount ?? currentDependency.cachedCount,
+    checked: status.checked ?? true,
+    loadedBytes: status.loadedBytes ?? currentDependency.loadedBytes,
+    message: status.message ?? currentDependency.message,
+    progress: clampProgress(progress),
+    supportsCache: status.supportsCache ?? currentDependency.supportsCache,
+    supportsWebGpu: status.supportsWebGpu ?? currentDependency.supportsWebGpu,
+    total: status.total ?? currentDependency.total,
+    totalBytes: status.totalBytes ?? currentDependency.totalBytes,
+  };
+}
+
+function setupDependenciesAreReady(dependencies) {
+  return (
+    dependencies.gemma.cached &&
+    dependencies.gemma.supportsCache &&
+    dependencies.gemma.supportsWebGpu &&
+    dependencies.supertonic.cached &&
+    dependencies.supertonic.supportsCache
+  );
+}
+
+function setupHasBlockingIssue(dependencies) {
+  return (
+    !dependencies.gemma.supportsCache ||
+    !dependencies.gemma.supportsWebGpu ||
+    !dependencies.supertonic.supportsCache
+  );
+}
+
+function buildSetupDependencies(gemmaStatus, supertonicStatus) {
+  const initialStatus = createInitialSetupStatus();
+
+  return {
+    gemma: mergeDependencyStatus(initialStatus.dependencies.gemma, gemmaStatus),
+    supertonic: mergeDependencyStatus(initialStatus.dependencies.supertonic, supertonicStatus),
+  };
+}
+
 function App() {
   const [selectedLanguage, setSelectedLanguage] = useState("it");
   const [savedCardIds, setSavedCardIds] = useState(loadSavedCardIds);
+  const [generatedCardsByLanguage, setGeneratedCardsByLanguage] = useState(
+    loadGeneratedCardsByLanguage,
+  );
+  const [setupStatus, setSetupStatus] = useState(createInitialSetupStatus);
+  const [hasEnteredApp, setHasEnteredApp] = useState(false);
   const [activeView, setActiveView] = useState("feed");
+  const [generationStatus, setGenerationStatus] = useState(null);
+  const [isGeneratingCards, setIsGeneratingCards] = useState(false);
   const [activeSpeechKey, setActiveSpeechKey] = useState(null);
   const [speechStatus, setSpeechStatus] = useState(null);
   const [ttsResults, setTtsResults] = useState(loadTtsResults);
@@ -159,25 +340,86 @@ function App() {
     supportsCache: true,
     total: 7,
   });
+  const feedRef = useRef(null);
+  const feedEndRef = useRef(null);
+  const isGeneratingCardsRef = useRef(false);
+  const selectedLanguageRef = useRef(selectedLanguage);
 
-  const visibleCards = useMemo(
-    () => SAMPLE_CARDS.filter((card) => card.languageCode === selectedLanguage),
-    [selectedLanguage],
+  useEffect(() => {
+    let isActive = true;
+
+    async function checkSetupDependencies() {
+      try {
+        const [gemmaStatus, supertonicStatus] = await Promise.all([
+          getGemmaCacheStatus(),
+          getSupertonicCacheStatus(),
+        ]);
+
+        if (!isActive) {
+          return;
+        }
+
+        const dependencies = buildSetupDependencies(gemmaStatus, supertonicStatus);
+        setModelCacheStatus(supertonicStatus);
+        setSetupStatus({
+          dependencies,
+          error: "",
+          phase: setupDependenciesAreReady(dependencies) ? "ready" : "needs-setup",
+        });
+      } catch (error) {
+        if (!isActive) {
+          return;
+        }
+
+        setSetupStatus((currentStatus) => ({
+          ...currentStatus,
+          error: getErrorMessage(error),
+          phase: "error",
+        }));
+      }
+    }
+
+    checkSetupDependencies();
+
+    return () => {
+      isActive = false;
+    };
+  }, []);
+
+  const visibleCards = useMemo(() => {
+    const seedCards = SAMPLE_CARDS.filter((card) => card.languageCode === selectedLanguage);
+    const generatedCards = generatedCardsByLanguage[selectedLanguage] ?? [];
+
+    return [...seedCards, ...generatedCards];
+  }, [generatedCardsByLanguage, selectedLanguage]);
+
+  const allCards = useMemo(
+    () => [...SAMPLE_CARDS, ...Object.values(generatedCardsByLanguage).flat()],
+    [generatedCardsByLanguage],
   );
 
   const savedCards = useMemo(() => {
     const savedIds = new Set(savedCardIds);
 
-    return SAMPLE_CARDS.filter((card) => savedIds.has(card.id)).sort((firstCard, secondCard) =>
+    return allCards.filter((card) => savedIds.has(card.id)).sort((firstCard, secondCard) =>
       firstCard.targetText.localeCompare(secondCard.targetText, undefined, {
         sensitivity: "base",
       }),
     );
-  }, [savedCardIds]);
+  }, [allCards, savedCardIds]);
 
   useEffect(() => {
     window.localStorage.setItem(SAVED_CARD_IDS_STORAGE_KEY, JSON.stringify(savedCardIds));
   }, [savedCardIds]);
+
+  useEffect(() => {
+    persistGeneratedCardsByLanguage(generatedCardsByLanguage);
+  }, [generatedCardsByLanguage]);
+
+  useEffect(() => {
+    selectedLanguageRef.current = selectedLanguage;
+    setGenerationStatus(null);
+  }, [selectedLanguage]);
 
   useEffect(() => {
     if (!speechStatus || speechStatus.tone === "loading") {
@@ -197,9 +439,112 @@ function App() {
     }
   }, [activeView]);
 
+  useEffect(() => {
+    if (
+      activeView !== "feed" ||
+      !feedEndRef.current ||
+      typeof window === "undefined" ||
+      !("IntersectionObserver" in window)
+    ) {
+      return undefined;
+    }
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          handleGenerateMoreCards();
+        }
+      },
+      {
+        root: feedRef.current,
+        rootMargin: "520px 0px",
+        threshold: 0.01,
+      },
+    );
+
+    observer.observe(feedEndRef.current);
+
+    return () => observer.disconnect();
+  }, [activeView, selectedLanguage, visibleCards.length]);
+
   async function refreshModelCacheStatus() {
     const status = await getSupertonicCacheStatus();
     setModelCacheStatus(status);
+  }
+
+  async function handleSetupModels() {
+    setSetupStatus((currentStatus) => ({
+      ...currentStatus,
+      error: "",
+      phase: "downloading",
+    }));
+
+    try {
+      let gemmaStatus = await getGemmaCacheStatus();
+      let supertonicStatus = await getSupertonicCacheStatus();
+
+      setSetupStatus((currentStatus) => ({
+        ...currentStatus,
+        dependencies: buildSetupDependencies(gemmaStatus, supertonicStatus),
+        phase: "downloading",
+      }));
+
+      if (!gemmaStatus.cached) {
+        gemmaStatus = await preloadGemmaModel({
+          onStatus: (status) => {
+            setSetupStatus((currentStatus) => ({
+              ...currentStatus,
+              dependencies: {
+                ...currentStatus.dependencies,
+                gemma: mergeDependencyStatus(currentStatus.dependencies.gemma, status),
+              },
+              phase: "downloading",
+            }));
+          },
+        });
+      }
+
+      setSetupStatus((currentStatus) => ({
+        ...currentStatus,
+        dependencies: {
+          ...currentStatus.dependencies,
+          gemma: mergeDependencyStatus(currentStatus.dependencies.gemma, gemmaStatus),
+        },
+      }));
+
+      if (!supertonicStatus.cached) {
+        supertonicStatus = await cacheTtsModelAssets({
+          onStatus: (status) => {
+            setSetupStatus((currentStatus) => ({
+              ...currentStatus,
+              dependencies: {
+                ...currentStatus.dependencies,
+                supertonic: mergeDependencyStatus(
+                  currentStatus.dependencies.supertonic,
+                  status,
+                ),
+              },
+              phase: "downloading",
+            }));
+          },
+        });
+      }
+
+      setModelCacheStatus(supertonicStatus);
+
+      const dependencies = buildSetupDependencies(gemmaStatus, supertonicStatus);
+      setSetupStatus({
+        dependencies,
+        error: "",
+        phase: setupDependenciesAreReady(dependencies) ? "ready" : "needs-setup",
+      });
+    } catch (error) {
+      setSetupStatus((currentStatus) => ({
+        ...currentStatus,
+        error: getErrorMessage(error),
+        phase: "error",
+      }));
+    }
   }
 
   function toggleSaved(cardId) {
@@ -228,6 +573,70 @@ function App() {
   function clearTtsResults() {
     window.localStorage.removeItem(TTS_RESULTS_STORAGE_KEY);
     setTtsResults({});
+  }
+
+  async function handleGenerateMoreCards() {
+    if (isGeneratingCardsRef.current) {
+      return;
+    }
+
+    const languageCode = selectedLanguage;
+    const languageConfig = LANGUAGES.find((language) => language.code === languageCode);
+    const existingCards = [
+      ...SAMPLE_CARDS.filter((card) => card.languageCode === languageCode),
+      ...(generatedCardsByLanguage[languageCode] ?? []),
+    ];
+
+    isGeneratingCardsRef.current = true;
+    setIsGeneratingCards(true);
+    setGenerationStatus({
+      message: `Preparing ${languageConfig?.label ?? "language"} card`,
+      tone: "loading",
+    });
+
+    try {
+      const result = await generateLanguageCards({
+        count: 1,
+        existingCards,
+        languageCode,
+        onStatus: (status) => {
+          if (selectedLanguageRef.current !== languageCode) {
+            return;
+          }
+
+          setGenerationStatus({
+            message: status.message ?? "Generating next card",
+            tone: "loading",
+          });
+        },
+      });
+
+      setGeneratedCardsByLanguage((currentCardsByLanguage) => {
+        const currentCards = currentCardsByLanguage[languageCode] ?? [];
+
+        return {
+          ...currentCardsByLanguage,
+          [languageCode]: [...currentCards, ...result.cards],
+        };
+      });
+
+      if (selectedLanguageRef.current === languageCode) {
+        setGenerationStatus({
+          message: "Next card ready",
+          tone: "success",
+        });
+      }
+    } catch (error) {
+      if (selectedLanguageRef.current === languageCode) {
+        setGenerationStatus({
+          message: getErrorMessage(error),
+          tone: "error",
+        });
+      }
+    } finally {
+      isGeneratingCardsRef.current = false;
+      setIsGeneratingCards(false);
+    }
   }
 
   async function handlePrepareModel() {
@@ -363,6 +772,19 @@ function App() {
     }
   }
 
+  if (!hasEnteredApp) {
+    return (
+      <SetupScreen
+        onEnter={() => {
+          setActiveView("feed");
+          setHasEnteredApp(true);
+        }}
+        onSetup={handleSetupModels}
+        setupStatus={setupStatus}
+      />
+    );
+  }
+
   return (
     <main className="app-shell">
       <header className="top-bar" aria-label="LangTok controls">
@@ -406,7 +828,7 @@ function App() {
       </header>
 
       {activeView === "feed" ? (
-        <section className="feed" aria-label="For You language feed">
+        <section className="feed" aria-label="For You language feed" ref={feedRef}>
           {visibleCards.map((card) => (
             <LanguageCard
               activeSpeechKey={activeSpeechKey}
@@ -417,6 +839,11 @@ function App() {
               onToggleSaved={toggleSaved}
             />
           ))}
+          <FeedGenerationCard
+            generationStatus={generationStatus}
+            isGenerating={isGeneratingCards}
+            sentinelRef={feedEndRef}
+          />
         </section>
       ) : null}
 
@@ -444,6 +871,104 @@ function App() {
 
       <SpeechStatus status={speechStatus} />
     </main>
+  );
+}
+
+function SetupScreen({ onEnter, onSetup, setupStatus }) {
+  const { dependencies, error, phase } = setupStatus;
+  const ready = setupDependenciesAreReady(dependencies);
+  const blockingIssue = setupHasBlockingIssue(dependencies);
+  const isChecking = phase === "checking";
+  const isDownloading = phase === "downloading";
+  const buttonLabel = ready ? "Enter LangTok" : "Download models";
+  const buttonDisabled = isChecking || isDownloading || blockingIssue;
+  const setupMessage = ready
+    ? "Models cached"
+    : isDownloading
+      ? "Downloading models"
+      : "Download Gemma and Supertonic before entering.";
+
+  return (
+    <main className="setup-shell">
+      <section className="setup-content" aria-label="LangTok setup">
+        <div className="setup-heading">
+          <p>LangTok</p>
+          <h1>Local setup</h1>
+        </div>
+
+        <div className="setup-dependencies">
+          <DependencyProgress dependency={dependencies.gemma} kind="gemma" />
+          <DependencyProgress dependency={dependencies.supertonic} kind="supertonic" />
+        </div>
+
+        <p className={`setup-message ${error ? "error" : ""}`}>{error || setupMessage}</p>
+
+        <button
+          className="setup-button"
+          type="button"
+          disabled={buttonDisabled}
+          onClick={ready ? onEnter : onSetup}
+        >
+          {ready ? <Sparkles aria-hidden="true" size={18} /> : <Download aria-hidden="true" size={18} />}
+          <span>{isDownloading ? "Downloading" : buttonLabel}</span>
+        </button>
+      </section>
+    </main>
+  );
+}
+
+function DependencyProgress({ dependency, kind }) {
+  const percent = Math.round(clampProgress(dependency.progress) * 100);
+  let message = dependency.message;
+
+  if (!dependency.supportsCache) {
+    message = "Cache unavailable";
+  } else if (kind === "gemma" && !dependency.supportsWebGpu) {
+    message = "WebGPU required";
+  } else if (dependency.cached) {
+    message = "Cached";
+  } else if (dependency.totalBytes && dependency.loadedBytes) {
+    message = `${formatBytes(dependency.loadedBytes)} / ${formatBytes(dependency.totalBytes)}`;
+  } else if (!dependency.checked) {
+    message = "Checking";
+  } else if (dependency.total > 1) {
+    message = `Cached ${dependency.cachedCount}/${dependency.total}`;
+  } else {
+    message = "Not cached";
+  }
+
+  return (
+    <div className="dependency-row">
+      <div className="dependency-copy">
+        <span>{dependency.label}</span>
+        <small>{message}</small>
+      </div>
+      <div
+        aria-label={`${dependency.label} setup progress`}
+        aria-valuemax={100}
+        aria-valuemin={0}
+        aria-valuenow={percent}
+        className="progress-track"
+        role="progressbar"
+      >
+        <span style={{ width: `${percent}%` }} />
+      </div>
+    </div>
+  );
+}
+
+function FeedGenerationCard({ generationStatus, isGenerating, sentinelRef }) {
+  const tone = generationStatus?.tone ?? "idle";
+  const message = generationStatus?.message ?? "Loading next card";
+
+  return (
+    <article className={`feed-status-card ${tone}`}>
+      <div className="feed-status-content">
+        <Sparkles aria-hidden="true" className={isGenerating ? "is-pulsing" : ""} size={24} />
+        <p>{message}</p>
+      </div>
+      <span aria-hidden="true" className="feed-sentinel" ref={sentinelRef} />
+    </article>
   );
 }
 

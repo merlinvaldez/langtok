@@ -36,6 +36,122 @@ button {
   background: #fbfaf7;
 }
 
+.setup-shell {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  background: #fbfaf7;
+  padding: clamp(20px, 6vw, 56px);
+}
+
+.setup-content {
+  display: grid;
+  width: min(520px, 100%);
+  gap: 28px;
+}
+
+.setup-heading {
+  display: grid;
+  gap: 6px;
+}
+
+.setup-heading p,
+.setup-heading h1,
+.setup-message,
+.dependency-copy span,
+.dependency-copy small {
+  margin: 0;
+}
+
+.setup-heading p {
+  color: #6d665d;
+  font-size: 0.9rem;
+  font-weight: 850;
+}
+
+.setup-heading h1 {
+  color: #151515;
+  font-size: clamp(2.5rem, 9vw, 5.5rem);
+  line-height: 0.95;
+  letter-spacing: 0;
+}
+
+.setup-dependencies {
+  display: grid;
+  gap: 18px;
+}
+
+.dependency-row {
+  display: grid;
+  gap: 10px;
+}
+
+.dependency-copy {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.dependency-copy span {
+  color: #151515;
+  font-weight: 850;
+}
+
+.dependency-copy small {
+  color: #6d665d;
+  font-size: 0.86rem;
+  font-weight: 700;
+  text-align: right;
+}
+
+.progress-track {
+  height: 10px;
+  overflow: hidden;
+  border: 1px solid #ded8cc;
+  border-radius: 999px;
+  background: #ffffff;
+}
+
+.progress-track span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: #151515;
+  transition: width 180ms ease;
+}
+
+.setup-message {
+  min-height: 24px;
+  color: #4b4b4b;
+  font-weight: 750;
+}
+
+.setup-message.error {
+  color: #8b3b31;
+}
+
+.setup-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 48px;
+  width: fit-content;
+  border: 1px solid #151515;
+  border-radius: 8px;
+  background: #151515;
+  color: #ffffff;
+  padding: 0 18px;
+  font-weight: 850;
+}
+
+.setup-button:disabled {
+  border-color: #ded8cc;
+  background: #ffffff;
+  color: #7a756d;
+}
+
 .top-bar {
   position: fixed;
   z-index: 10;
@@ -150,6 +266,43 @@ button:disabled {
   padding: 116px clamp(16px, 5vw, 64px) 34px;
   border-bottom: 1px solid #e8e3d8;
   background: #fbfaf7;
+}
+
+.feed-status-card {
+  position: relative;
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  scroll-snap-align: start;
+  border-bottom: 1px solid #e8e3d8;
+  background: #fbfaf7;
+  padding: 116px clamp(16px, 5vw, 64px) 34px;
+}
+
+.feed-status-content {
+  display: grid;
+  justify-items: center;
+  gap: 16px;
+  text-align: center;
+}
+
+.feed-status-content p {
+  max-width: 460px;
+  margin: 0;
+  color: #4b4b4b;
+  font-size: clamp(1.2rem, 2.4vw, 1.8rem);
+  font-weight: 750;
+}
+
+.feed-status-card.error .feed-status-content p {
+  color: #8b3b31;
+}
+
+.feed-sentinel {
+  position: absolute;
+  bottom: 30vh;
+  width: 1px;
+  height: 1px;
 }
 
 .card-content {

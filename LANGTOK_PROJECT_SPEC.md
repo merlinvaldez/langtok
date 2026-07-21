@@ -14,8 +14,9 @@ By the end of the project, the builder should understand:
 - How to create a mobile-first vertical feed with card-based interactions.
 - How to store saved learning items in browser storage.
 - How to prepare and cache browser-side model assets.
+- How to gate a browser app behind required local model setup.
 - How to run Supertonic 3 through ONNX Runtime Web.
-- How to use WebLLM for browser-local structured text generation.
+- How to use Gemma 4 E2B for browser-local structured text generation.
 - How to validate LLM output before rendering it in the UI.
 - How to keep pronunciation audio, phonetic spelling, and displayed text aligned.
 
@@ -24,6 +25,19 @@ By the end of the project, the builder should understand:
 The target user is a casual language learner who wants quick exposure to useful vocabulary and phrases without building a formal flashcard deck first. The user opens the app, chooses a language, scrolls through fresh learning cards, listens to pronunciation, and saves useful terms for later review.
 
 ## 4. Core Experience
+
+### 4.0 Startup Setup
+
+The app must check required model dependencies before the learner enters the main LangTok experience.
+
+Requirements:
+
+- On app load, check whether Gemma 4 E2B and Supertonic 3 assets are already cached in the browser.
+- If either dependency is missing, show a minimal setup flow before the feed.
+- The setup flow must download Gemma 4 E2B and Supertonic 3 assets into the browser Cache API.
+- Show separate progress bars for Gemma 4 E2B and Supertonic 3.
+- Do not allow entry into the feed until both required dependencies are cached.
+- If the browser cannot support the required cache or WebGPU capabilities, show the blocking state instead of silently falling back to a cloud or system option.
 
 ### 4.1 For You Feed
 
@@ -36,7 +50,7 @@ Requirements:
 - Generate a continuing feed of words and phrases for the selected language.
 - Mix individual vocabulary words and practical phrases.
 - Keep cards beginner-friendly by default.
-- Generate more cards before the user reaches the end of the current batch.
+- Generate one new card before the user reaches the end of the current feed.
 - Avoid showing duplicate cards in the same session when possible.
 
 Each card should include:
@@ -80,6 +94,8 @@ Requirements:
 The first complete MVP should include:
 
 - React app scaffolded with Vite.
+- Startup setup gate for required local model dependencies.
+- Cache progress bars for Gemma 4 E2B and Supertonic 3.
 - Mobile-first app shell.
 - Language dropdown.
 - Static hardcoded feed cards.
@@ -89,6 +105,8 @@ The first complete MVP should include:
 - Supertonic 3 TTS test harness for Italian, Arabic, and French.
 - Supertonic-only audio playback on feed cards and saved cards.
 - Browser Cache API preparation for Supertonic model assets.
+- Gemma 4 E2B browser-local card generation.
+- Infinite feed loading as the user nears the end of the current cards.
 - Basic model loading, download, generation, and error states.
 
 The MVP should not require a backend, account system, payments, analytics, cloud database, cloud TTS fallback, or system TTS fallback.
@@ -97,20 +115,24 @@ The MVP should not require a backend, account system, payments, analytics, cloud
 
 ### 6.1 Text Generation
 
-Use WebLLM for browser-local generation after the static feed, Word Wall, and Supertonic TTS path are working.
+Use Gemma 4 E2B for browser-local generation after the static feed, Word Wall, and Supertonic TTS path are working.
 
 Primary local text model decision:
 
 - Use Gemma 4 E2B IT as the preferred main local text model for LangTok.
+- Use the web-converted model file `gemma-4-E2B-it-web.task` from `litert-community/gemma-4-E2B-it-litert-lm`.
+- Run the model through Google AI Edge MediaPipe GenAI with `@mediapipe/tasks-genai`.
 - Treat this model as the first target for browser-local vocabulary and phrase generation.
 - Use it for card generation, English meanings, example sentences, example translations, phonetic spelling, and later review prompts.
 - This model does not replace the local TTS model; pronunciation audio remains a separate browser-local TTS adapter responsibility.
-- Before implementation, verify the exact WebLLM-compatible model id, browser/WebGPU compatibility, download size, memory requirements, and performance on the target device.
-- If Gemma 4 E2B IT is not available in a browser-compatible WebLLM package, use the closest compatible Gemma instruct model and document the deviation.
+- Download the model into the browser Cache API during startup setup.
+- Read the cached model asset when creating the MediaPipe `LlmInference` instance.
+- Chrome/WebGPU is required by the current Gemma 4 E2B web package.
+- WebLLM remains useful to study, but it is not the exact runtime used for Gemma 4 E2B in this implementation.
 
 Generation responsibilities:
 
-- Generate batches of vocabulary and phrase cards.
+- Generate one vocabulary or phrase card per scroll-triggered request.
 - Return structured JSON only.
 - Respect the selected target language.
 - Produce beginner-friendly, practical learning content.
@@ -120,10 +142,12 @@ Generation responsibilities:
 
 Recommended generation strategy:
 
-- Request 5 to 10 cards at a time.
+- Request exactly one card at a time to keep responses short and reduce malformed JSON.
 - Ask for strict JSON matching the card schema.
 - Parse and validate the response before appending cards to the feed.
-- If validation fails, discard the batch and show a retry action.
+- If validation fails, discard the card and show a concise retry-on-scroll status.
+- Trigger new one-card requests with an Intersection Observer sentinel near the end of the feed.
+- Persist generated cards locally so saved generated cards remain available after reload.
 
 ### 6.2 Text-to-Speech
 
@@ -212,7 +236,8 @@ Browser assets:
 - React for UI.
 - Vite for local development and bundling.
 - Plain CSS or CSS modules for styling.
-- WebLLM for local LLM generation.
+- MediaPipe GenAI for Gemma 4 E2B browser-local generation.
+- Gemma 4 E2B web task model from Hugging Face.
 - ONNX Runtime Web for Supertonic 3 inference.
 - Supertonic 3 as the active browser-local TTS model.
 - Browser Cache API for model asset preparation.
@@ -261,6 +286,19 @@ Browser assets:
 ```
 
 ## 9. App Screens
+
+### 9.0 Setup Screen
+
+Primary route or view: startup gate before `/`
+
+Main UI elements:
+
+- LangTok setup heading.
+- Gemma 4 E2B cache status and progress bar.
+- Supertonic 3 cache status and progress bar.
+- Download models button when dependencies are missing.
+- Enter LangTok button only after both dependencies are cached.
+- Blocking browser capability state when Cache API or WebGPU support is missing.
 
 ### 9.1 Feed Screen
 
@@ -379,22 +417,24 @@ Acceptance criteria:
 - The UI remains responsive enough while audio is prepared.
 - The harness records model id, backend, voice style, load time, generation time, total time, and timestamp.
 
-### Milestone 4: WebLLM Generation Prototype
+### Milestone 4: Gemma 4 E2B Generation Prototype
 
 Deliverables:
 
-- WebLLM worker.
-- Generate-card-batch function.
+- Gemma 4 E2B generation service.
+- Generate-one-card function.
 - JSON parsing and validation.
 - Append generated cards to the feed.
-- Documented model id and fallback if Gemma 4 E2B IT is not WebLLM-compatible.
+- Documented model id, web model file, runtime, and WebGPU requirement.
+- Local persistence for generated cards.
 
 Acceptance criteria:
 
-- User can generate a new batch for the selected language.
+- Scrolling near the end generates one new card for the selected language.
 - Invalid model output is rejected safely.
 - Generated cards match the app schema.
 - Generated phonetic spelling describes the same text sent to TTS.
+- Generation uses `litert-community/gemma-4-E2B-it-litert-lm` and `gemma-4-E2B-it-web.task`.
 
 ### Milestone 5: Infinite Feed
 
@@ -409,8 +449,29 @@ Acceptance criteria:
 - Feed continues to grow as the user scrolls.
 - The app does not trigger overlapping generation requests.
 - Duplicate cards are minimized.
+- The app shows a retryable status if Gemma loading or generation fails.
 
-### Milestone 6: Review Mode
+### Milestone 6: Startup Model Setup Gate
+
+Deliverables:
+
+- Initial cache check for Gemma 4 E2B and Supertonic 3.
+- Minimal setup screen shown before the feed when either dependency is missing.
+- Gemma 4 E2B Cache API downloader with progress.
+- Supertonic 3 asset Cache API downloader with progress.
+- Enter LangTok action enabled only after both dependencies are cached.
+- Blocking browser capability state for missing Cache API or WebGPU support.
+
+Acceptance criteria:
+
+- A fresh browser profile sees the setup screen before the feed.
+- A cached browser profile can enter LangTok after the startup check.
+- Downloading models updates visible progress bars.
+- The app does not enter the main feed while Gemma or Supertonic is missing from cache.
+- Gemma generation uses the cached model asset.
+- The setup flow does not introduce cloud, backend, system TTS, or other fallback model paths.
+
+### Milestone 7: Review Mode
 
 Deliverables:
 
@@ -432,20 +493,18 @@ The generation prompt should require JSON with no markdown wrapper.
 Example prompt intent:
 
 ```text
-Generate 8 beginner-friendly language learning cards for {selectedLanguage}.
-Mix useful words and short phrases.
-Return only valid JSON with this shape:
+Generate exactly 1 beginner-friendly language learning card for {selectedLanguage}.
+Choose either one useful word or one short practical phrase.
+Return only valid minified JSON with this shape:
 {
-  "cards": [
-    {
-      "targetText": "string",
-      "ttsText": "string, optional; exact text to speak",
-      "translation": "string",
-      "phoneticSpelling": "string; must describe ttsText when ttsText exists",
-      "example": "string",
-      "exampleTranslation": "string"
-    }
-  ]
+  "card": {
+    "targetText": "string",
+    "ttsText": "string; exact text to speak",
+    "translation": "string",
+    "phoneticSpelling": "string; must describe ttsText",
+    "example": "string",
+    "exampleTranslation": "string"
+  }
 }
 Do not include duplicates. Do not include offensive, adult, or overly obscure content.
 ```
@@ -509,8 +568,10 @@ Mitigations:
 
 ## 16. Documentation References
 
-- WebLLM Basic Usage: https://webllm.mlc.ai/docs/user/basic_usage.html
-- WebLLM Advanced Use Cases: https://webllm.mlc.ai/docs/user/advanced_usage.html
+- Google AI Edge LLM Inference Web guide: https://developers.google.com/edge/mediapipe/solutions/genai/llm_inference/web_js
+- Gemma 4 model card: https://ai.google.dev/gemma/docs/core/model_card_4
+- Gemma 4 E2B LiteRT-LM model: https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm
+- MediaPipe Tasks GenAI npm package: https://www.npmjs.com/package/@mediapipe/tasks-genai
 - Supertonic 3 Overview: https://supertonic3.github.io/
 - Supertonic GitHub Repository: https://github.com/supertone-inc/supertonic
 - Supertonic 3 Hugging Face model assets: https://huggingface.co/Supertone/supertonic-3
@@ -523,6 +584,7 @@ Mitigations:
 
 The learning project is complete when:
 
+- A first-time user is guided through caching Gemma 4 E2B and Supertonic 3 before entering the app.
 - A user can choose Italian, Arabic, or French.
 - A user can scroll through a feed of vocabulary and phrase cards.
 - A user can hear pronunciation for cards using Supertonic 3 in the browser.

@@ -9,6 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@mediapipe/tasks-genai": "^0.10.29",
     "@vitejs/plugin-react": "^4.3.4",
     "lucide-react": "^0.468.0",
     "onnxruntime-web": "^1.27.0",
