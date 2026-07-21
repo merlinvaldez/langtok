@@ -272,7 +272,9 @@ button:disabled {
   position: relative;
   display: grid;
   min-height: 100vh;
-  place-items: center;
+  align-content: center;
+  justify-items: center;
+  gap: 22px;
   scroll-snap-align: start;
   border-bottom: 1px solid #e8e3d8;
   background: #fbfaf7;
@@ -296,6 +298,72 @@ button:disabled {
 
 .feed-status-card.error .feed-status-content p {
   color: #8b3b31;
+}
+
+.generation-debug {
+  width: min(900px, 100%);
+  border-top: 1px solid #ded8cc;
+  color: #252525;
+}
+
+.generation-debug summary {
+  display: flex;
+  min-height: 44px;
+  cursor: pointer;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  list-style: none;
+  outline: none;
+}
+
+.generation-debug summary::-webkit-details-marker {
+  display: none;
+}
+
+.generation-debug summary span {
+  font-size: 0.88rem;
+  font-weight: 900;
+}
+
+.generation-debug summary small {
+  color: #7a756d;
+  font-size: 0.74rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.generation-debug-grid {
+  display: grid;
+  gap: 14px;
+  padding: 4px 0 16px;
+}
+
+.generation-debug-block {
+  display: grid;
+  gap: 6px;
+}
+
+.generation-debug-block span {
+  color: #7a756d;
+  font-size: 0.72rem;
+  font-weight: 900;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.generation-debug-block pre {
+  max-height: 170px;
+  overflow: auto;
+  margin: 0;
+  padding: 10px 0;
+  border-top: 1px solid #e8e3d8;
+  color: #151515;
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .feed-sentinel {

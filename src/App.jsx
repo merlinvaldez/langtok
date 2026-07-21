@@ -11,7 +11,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { LANGUAGES, SAMPLE_CARDS } from "./data.js";
-import { generateLanguageCards, getGemmaCacheStatus, preloadGemmaModel } from "./generationService.js";
+import { generateLanguageCards, getQwenCacheStatus, preloadQwenModel } from "./generationService.js";
 import { TTS_TEST_CASES, getTtsLanguageConfig } from "./ttsConfig.js";
 import {
   cacheTtsModelAssets,
@@ -133,6 +133,12 @@ function getErrorMessage(error) {
   return error instanceof Error ? error.message : String(error);
 }
 
+function getGenerationDebug(error) {
+  return error && typeof error === "object" && "generationDebug" in error
+    ? error.generationDebug
+    : null;
+}
+
 function formatMs(milliseconds) {
   if (typeof milliseconds !== "number") {
     return "";
@@ -250,7 +256,7 @@ function createSetupDependency(label) {
 function createInitialSetupStatus() {
   return {
     dependencies: {
-      gemma: createSetupDependency("Gemma 4 E2B"),
+      qwen: createSetupDependency("Qwen2.5 1.5B"),
       supertonic: createSetupDependency("Supertonic 3"),
     },
     error: "",
@@ -294,9 +300,9 @@ function mergeDependencyStatus(currentDependency, status) {
 
 function setupDependenciesAreReady(dependencies) {
   return (
-    dependencies.gemma.cached &&
-    dependencies.gemma.supportsCache &&
-    dependencies.gemma.supportsWebGpu &&
+    dependencies.qwen.cached &&
+    dependencies.qwen.supportsCache &&
+    dependencies.qwen.supportsWebGpu &&
     dependencies.supertonic.cached &&
     dependencies.supertonic.supportsCache
   );
@@ -304,17 +310,17 @@ function setupDependenciesAreReady(dependencies) {
 
 function setupHasBlockingIssue(dependencies) {
   return (
-    !dependencies.gemma.supportsCache ||
-    !dependencies.gemma.supportsWebGpu ||
+    !dependencies.qwen.supportsCache ||
+    !dependencies.qwen.supportsWebGpu ||
     !dependencies.supertonic.supportsCache
   );
 }
 
-function buildSetupDependencies(gemmaStatus, supertonicStatus) {
+function buildSetupDependencies(qwenStatus, supertonicStatus) {
   const initialStatus = createInitialSetupStatus();
 
   return {
-    gemma: mergeDependencyStatus(initialStatus.dependencies.gemma, gemmaStatus),
+    qwen: mergeDependencyStatus(initialStatus.dependencies.qwen, qwenStatus),
     supertonic: mergeDependencyStatus(initialStatus.dependencies.supertonic, supertonicStatus),
   };
 }
@@ -350,8 +356,8 @@ function App() {
 
     async function checkSetupDependencies() {
       try {
-        const [gemmaStatus, supertonicStatus] = await Promise.all([
-          getGemmaCacheStatus(),
+        const [qwenStatus, supertonicStatus] = await Promise.all([
+          getQwenCacheStatus(),
           getSupertonicCacheStatus(),
         ]);
 
@@ -359,7 +365,7 @@ function App() {
           return;
         }
 
-        const dependencies = buildSetupDependencies(gemmaStatus, supertonicStatus);
+        const dependencies = buildSetupDependencies(qwenStatus, supertonicStatus);
         setModelCacheStatus(supertonicStatus);
         setSetupStatus({
           dependencies,
@@ -480,23 +486,23 @@ function App() {
     }));
 
     try {
-      let gemmaStatus = await getGemmaCacheStatus();
+      let qwenStatus = await getQwenCacheStatus();
       let supertonicStatus = await getSupertonicCacheStatus();
 
       setSetupStatus((currentStatus) => ({
         ...currentStatus,
-        dependencies: buildSetupDependencies(gemmaStatus, supertonicStatus),
+        dependencies: buildSetupDependencies(qwenStatus, supertonicStatus),
         phase: "downloading",
       }));
 
-      if (!gemmaStatus.cached) {
-        gemmaStatus = await preloadGemmaModel({
+      if (!qwenStatus.cached) {
+        qwenStatus = await preloadQwenModel({
           onStatus: (status) => {
             setSetupStatus((currentStatus) => ({
               ...currentStatus,
               dependencies: {
                 ...currentStatus.dependencies,
-                gemma: mergeDependencyStatus(currentStatus.dependencies.gemma, status),
+                qwen: mergeDependencyStatus(currentStatus.dependencies.qwen, status),
               },
               phase: "downloading",
             }));
@@ -508,7 +514,7 @@ function App() {
         ...currentStatus,
         dependencies: {
           ...currentStatus.dependencies,
-          gemma: mergeDependencyStatus(currentStatus.dependencies.gemma, gemmaStatus),
+          qwen: mergeDependencyStatus(currentStatus.dependencies.qwen, qwenStatus),
         },
       }));
 
@@ -532,7 +538,7 @@ function App() {
 
       setModelCacheStatus(supertonicStatus);
 
-      const dependencies = buildSetupDependencies(gemmaStatus, supertonicStatus);
+      const dependencies = buildSetupDependencies(qwenStatus, supertonicStatus);
       setSetupStatus({
         dependencies,
         error: "",
@@ -590,6 +596,7 @@ function App() {
     isGeneratingCardsRef.current = true;
     setIsGeneratingCards(true);
     setGenerationStatus({
+      debug: null,
       message: `Preparing ${languageConfig?.label ?? "language"} card`,
       tone: "loading",
     });
@@ -604,10 +611,11 @@ function App() {
             return;
           }
 
-          setGenerationStatus({
+          setGenerationStatus((currentStatus) => ({
+            debug: status.debug ?? currentStatus?.debug ?? null,
             message: status.message ?? "Generating next card",
             tone: "loading",
-          });
+          }));
         },
       });
 
@@ -622,16 +630,18 @@ function App() {
 
       if (selectedLanguageRef.current === languageCode) {
         setGenerationStatus({
+          debug: result.debug ?? null,
           message: "Next card ready",
           tone: "success",
         });
       }
     } catch (error) {
       if (selectedLanguageRef.current === languageCode) {
-        setGenerationStatus({
+        setGenerationStatus((currentStatus) => ({
+          debug: getGenerationDebug(error) ?? currentStatus?.debug ?? null,
           message: getErrorMessage(error),
           tone: "error",
-        });
+        }));
       }
     } finally {
       isGeneratingCardsRef.current = false;
@@ -886,7 +896,7 @@ function SetupScreen({ onEnter, onSetup, setupStatus }) {
     ? "Models cached"
     : isDownloading
       ? "Downloading models"
-      : "Download Gemma and Supertonic before entering.";
+      : "Download Qwen and Supertonic before entering.";
 
   return (
     <main className="setup-shell">
@@ -897,7 +907,7 @@ function SetupScreen({ onEnter, onSetup, setupStatus }) {
         </div>
 
         <div className="setup-dependencies">
-          <DependencyProgress dependency={dependencies.gemma} kind="gemma" />
+          <DependencyProgress dependency={dependencies.qwen} kind="qwen" />
           <DependencyProgress dependency={dependencies.supertonic} kind="supertonic" />
         </div>
 
@@ -923,7 +933,7 @@ function DependencyProgress({ dependency, kind }) {
 
   if (!dependency.supportsCache) {
     message = "Cache unavailable";
-  } else if (kind === "gemma" && !dependency.supportsWebGpu) {
+  } else if (kind === "qwen" && !dependency.supportsWebGpu) {
     message = "WebGPU required";
   } else if (dependency.cached) {
     message = "Cached";
@@ -960,6 +970,7 @@ function DependencyProgress({ dependency, kind }) {
 function FeedGenerationCard({ generationStatus, isGenerating, sentinelRef }) {
   const tone = generationStatus?.tone ?? "idle";
   const message = generationStatus?.message ?? "Loading next card";
+  const debug = generationStatus?.debug ?? null;
 
   return (
     <article className={`feed-status-card ${tone}`}>
@@ -967,8 +978,52 @@ function FeedGenerationCard({ generationStatus, isGenerating, sentinelRef }) {
         <Sparkles aria-hidden="true" className={isGenerating ? "is-pulsing" : ""} size={24} />
         <p>{message}</p>
       </div>
+      <GenerationDebugPanel debug={debug} />
       <span aria-hidden="true" className="feed-sentinel" ref={sentinelRef} />
     </article>
+  );
+}
+
+function GenerationDebugPanel({ debug }) {
+  if (!debug) {
+    return null;
+  }
+
+  const open =
+    debug.stage === "repairing" ||
+    debug.stage === "validating-repair" ||
+    debug.stage === "rejected-repair" ||
+    debug.stage === "retrying";
+  const attemptLabel = debug.attempt ? `Attempt ${debug.attempt}` : "Contract";
+
+  return (
+    <details className="generation-debug" open={open}>
+      <summary>
+        <span>Inspect</span>
+        <small>{attemptLabel}</small>
+      </summary>
+
+      <div className="generation-debug-grid">
+        <GenerationDebugBlock title="Expected" value={debug.expected} />
+        <GenerationDebugBlock
+          title="Qwen output"
+          value={debug.rawResponse || "Waiting for Qwen output."}
+        />
+        {debug.repairResponse ? (
+          <GenerationDebugBlock title="Repair output" value={debug.repairResponse} />
+        ) : null}
+        {debug.problem ? <GenerationDebugBlock title="Problem" value={debug.problem} /> : null}
+      </div>
+    </details>
+  );
+}
+
+function GenerationDebugBlock({ title, value }) {
+  return (
+    <div className="generation-debug-block">
+      <span>{title}</span>
+      <pre>{value}</pre>
+    </div>
   );
 }
 
