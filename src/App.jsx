@@ -213,6 +213,130 @@ function buildTtsLogEntry({ languageCode, message, result, sampleLabel, text, to
   };
 }
 
+function findCardElementById(container, cardId) {
+  if (!container || !cardId) {
+    return null;
+  }
+
+  return (
+    Array.from(container.querySelectorAll("[data-card-id]")).find(
+      (element) => element.dataset.cardId === cardId,
+    ) ?? null
+  );
+}
+
+function devFlagIsEnabled(flagName) {
+  if (!import.meta.env.DEV || typeof window === "undefined") {
+    return false;
+  }
+
+  const params = new URLSearchParams(window.location.search);
+
+  return params.get(flagName) === "1" || params.get("devMode") === "1";
+}
+
+function createReadyDevDependency(label) {
+  return {
+    cached: true,
+    cachedCount: 1,
+    checked: true,
+    label,
+    loadedBytes: 0,
+    message: "Cached",
+    progress: 1,
+    supportsCache: true,
+    supportsWebGpu: true,
+    total: 1,
+    totalBytes: 0,
+  };
+}
+
+function createDevGeneratedCard({ existingCards, languageCode }) {
+  const languageConfig = LANGUAGES.find((language) => language.code === languageCode);
+  const sequence = existingCards.length + 1;
+  const baseCard = {
+    createdAt: new Date().toISOString(),
+    id: `dev-${languageCode}-${Date.now()}-${sequence}`,
+    language: languageConfig?.label ?? languageCode,
+    languageCode,
+    source: "dev-mock",
+  };
+
+  if (languageCode === "ar") {
+    return {
+      ...baseCard,
+      example: `هذه بطاقة رقم ${sequence}.`,
+      exampleTranslation: `This is card number ${sequence}.`,
+      phoneticSpelling: `bi-TAH-qah ${sequence}`,
+      targetText: `بطاقة ${sequence}`,
+      translation: `card ${sequence}`,
+      ttsText: `بِطَاقَة ${sequence}`,
+    };
+  }
+
+  if (languageCode === "fr") {
+    return {
+      ...baseCard,
+      example: `Voici la carte ${sequence}.`,
+      exampleTranslation: `Here is card ${sequence}.`,
+      phoneticSpelling: `kart ${sequence}`,
+      targetText: `carte ${sequence}`,
+      translation: `card ${sequence}`,
+      ttsText: `carte ${sequence}`,
+    };
+  }
+
+  return {
+    ...baseCard,
+    example: `Questa e la carta ${sequence}.`,
+    exampleTranslation: `This is card ${sequence}.`,
+    phoneticSpelling: `KAR-tah ${sequence}`,
+    targetText: `carta ${sequence}`,
+    translation: `card ${sequence}`,
+    ttsText: `carta ${sequence}`,
+  };
+}
+
+async function generateFeedCards({ count, existingCards, languageCode, onStatus }) {
+  if (!devFlagIsEnabled("mockGeneration")) {
+    return generateLanguageCards({
+      count,
+      existingCards,
+      languageCode,
+      onStatus,
+    });
+  }
+
+  const languageConfig = LANGUAGES.find((language) => language.code === languageCode);
+
+  onStatus?.({
+    message: `Generating ${languageConfig?.label ?? "language"} card`,
+    phase: "generating",
+    source: "dev-mock",
+  });
+  await new Promise((resolve) => window.setTimeout(resolve, 120));
+
+  const card = createDevGeneratedCard({ existingCards, languageCode });
+
+  return {
+    cards: [card],
+    debug: {
+      attempt: 1,
+      expected: "dev mock generation",
+      problem: "Dev mock output accepted.",
+      rawResponse: JSON.stringify({ card }, null, 2),
+      repairResponse: "",
+      stage: "accepted",
+    },
+    metrics: {
+      attempts: 1,
+      repaired: false,
+      totalMs: 120,
+    },
+    modelId: "dev-mock",
+  };
+}
+
 function clampProgress(value) {
   if (typeof value !== "number" || Number.isNaN(value)) {
     return 0;
@@ -348,7 +472,9 @@ function App() {
   });
   const feedRef = useRef(null);
   const feedEndRef = useRef(null);
+  const feedSentinelIsIntersectingRef = useRef(false);
   const isGeneratingCardsRef = useRef(false);
+  const lastGeneratedCardIdRef = useRef(null);
   const selectedLanguageRef = useRef(selectedLanguage);
 
   useEffect(() => {
@@ -356,6 +482,21 @@ function App() {
 
     async function checkSetupDependencies() {
       try {
+        if (devFlagIsEnabled("devReady")) {
+          const dependencies = {
+            qwen: createReadyDevDependency("Qwen2.5 1.5B"),
+            supertonic: createReadyDevDependency("Supertonic 3"),
+          };
+
+          setModelCacheStatus(dependencies.supertonic);
+          setSetupStatus({
+            dependencies,
+            error: "",
+            phase: "ready",
+          });
+          return;
+        }
+
         const [qwenStatus, supertonicStatus] = await Promise.all([
           getQwenCacheStatus(),
           getSupertonicCacheStatus(),
@@ -419,13 +560,45 @@ function App() {
   }, [savedCardIds]);
 
   useEffect(() => {
+    if (devFlagIsEnabled("mockGeneration")) {
+      return;
+    }
+
     persistGeneratedCardsByLanguage(generatedCardsByLanguage);
   }, [generatedCardsByLanguage]);
 
   useEffect(() => {
     selectedLanguageRef.current = selectedLanguage;
+    feedSentinelIsIntersectingRef.current = false;
+    lastGeneratedCardIdRef.current = null;
     setGenerationStatus(null);
   }, [selectedLanguage]);
+
+  useEffect(() => {
+    if (
+      activeView !== "feed" ||
+      !lastGeneratedCardIdRef.current ||
+      typeof window === "undefined"
+    ) {
+      return undefined;
+    }
+
+    const cardElement = findCardElementById(feedRef.current, lastGeneratedCardIdRef.current);
+
+    if (!cardElement) {
+      return undefined;
+    }
+
+    lastGeneratedCardIdRef.current = null;
+    const frameId = window.requestAnimationFrame(() => {
+      cardElement.scrollIntoView({
+        behavior: "smooth",
+        block: "start",
+      });
+    });
+
+    return () => window.cancelAnimationFrame(frameId);
+  }, [activeView, visibleCards]);
 
   useEffect(() => {
     if (!speechStatus || speechStatus.tone === "loading") {
@@ -447,6 +620,7 @@ function App() {
 
   useEffect(() => {
     if (
+      !hasEnteredApp ||
       activeView !== "feed" ||
       !feedEndRef.current ||
       typeof window === "undefined" ||
@@ -457,13 +631,21 @@ function App() {
 
     const observer = new IntersectionObserver(
       (entries) => {
-        if (entries.some((entry) => entry.isIntersecting)) {
+        const sentinelIsIntersecting = entries.some((entry) => entry.isIntersecting);
+
+        if (!sentinelIsIntersecting) {
+          feedSentinelIsIntersectingRef.current = false;
+          return;
+        }
+
+        if (!feedSentinelIsIntersectingRef.current) {
+          feedSentinelIsIntersectingRef.current = true;
           handleGenerateMoreCards();
         }
       },
       {
         root: feedRef.current,
-        rootMargin: "520px 0px",
+        rootMargin: "80px 0px",
         threshold: 0.01,
       },
     );
@@ -471,7 +653,7 @@ function App() {
     observer.observe(feedEndRef.current);
 
     return () => observer.disconnect();
-  }, [activeView, selectedLanguage, visibleCards.length]);
+  }, [activeView, hasEnteredApp, selectedLanguage, visibleCards.length]);
 
   async function refreshModelCacheStatus() {
     const status = await getSupertonicCacheStatus();
@@ -597,12 +779,12 @@ function App() {
     setIsGeneratingCards(true);
     setGenerationStatus({
       debug: null,
-      message: `Preparing ${languageConfig?.label ?? "language"} card`,
+      message: `Generating next ${languageConfig?.label ?? "language"} card`,
       tone: "loading",
     });
 
     try {
-      const result = await generateLanguageCards({
+      const result = await generateFeedCards({
         count: 1,
         existingCards,
         languageCode,
@@ -618,6 +800,11 @@ function App() {
           }));
         },
       });
+      const generatedCardId = result.cards[0]?.id ?? null;
+
+      if (selectedLanguageRef.current === languageCode) {
+        lastGeneratedCardIdRef.current = generatedCardId;
+      }
 
       setGeneratedCardsByLanguage((currentCardsByLanguage) => {
         const currentCards = currentCardsByLanguage[languageCode] ?? [];
@@ -631,7 +818,7 @@ function App() {
       if (selectedLanguageRef.current === languageCode) {
         setGenerationStatus({
           debug: result.debug ?? null,
-          message: "Next card ready",
+          message: "Added next card",
           tone: "success",
         });
       }
@@ -969,7 +1156,8 @@ function DependencyProgress({ dependency, kind }) {
 
 function FeedGenerationCard({ generationStatus, isGenerating, sentinelRef }) {
   const tone = generationStatus?.tone ?? "idle";
-  const message = generationStatus?.message ?? "Loading next card";
+  const message =
+    generationStatus?.message ?? (isGenerating ? "Generating next card" : "Scroll for more");
   const debug = generationStatus?.debug ?? null;
 
   return (
@@ -1033,7 +1221,7 @@ function LanguageCard({ activeSpeechKey, card, isSaved, onSpeak, onToggleSaved }
   const textDirection = getLanguageDirection(card.languageCode);
 
   return (
-    <article className="language-card">
+    <article className="language-card" data-card-id={card.id}>
       <div className="card-content">
         <div className="phrase-block">
           <p className="target-text" dir={textDirection}>

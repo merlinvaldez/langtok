@@ -40,56 +40,69 @@ const CARD_FIELD_LIMITS = {
   ttsText: 100,
 };
 
-const CARD_SCHEMA = {
-  type: "object",
-  additionalProperties: false,
-  required: ["card"],
-  properties: {
-    card: {
-      type: "object",
-      additionalProperties: false,
-      required: [
-        "targetText",
-        "ttsText",
-        "translation",
-        "phoneticSpelling",
-        "example",
-        "exampleTranslation",
-      ],
-      properties: {
-        targetText: {
-          type: "string",
-          description: "The target word or short phrase in the selected language.",
-        },
-        ttsText: {
-          type: "string",
-          description: "The exact text Supertonic should speak in the selected language.",
-        },
-        translation: {
-          type: "string",
-          description: "Short English meaning of targetText.",
-        },
-        phoneticSpelling: {
-          type: "string",
-          description: "Plain-English phonetic spelling of ttsText.",
-        },
-        example: {
-          type: "string",
-          description: "Short example sentence in the selected language.",
-        },
-        exampleTranslation: {
-          type: "string",
-          description: "Short English meaning of example.",
+const CARD_SCHEMA_REQUIRED_FIELDS = [
+  "targetText",
+  "ttsText",
+  "translation",
+  "phoneticSpelling",
+  "example",
+  "exampleTranslation",
+];
+
+function buildCardFieldSchema({ description }) {
+  return {
+    type: "string",
+    description,
+  };
+}
+
+function buildCardSchema(language) {
+  const isArabic = language.code === "ar";
+  const targetScript = isArabic ? "Arabic script" : `${language.label}`;
+  const phoneticDescription = isArabic
+    ? "Latin-letter phonetic spelling of ttsText, such as SHOOK-ran or mar-HA-ban. Never use Arabic script here."
+    : "Plain-English phonetic spelling of the exact spoken form in ttsText.";
+
+  return {
+    type: "object",
+    additionalProperties: false,
+    required: ["card"],
+    properties: {
+      card: {
+        type: "object",
+        additionalProperties: false,
+        required: CARD_SCHEMA_REQUIRED_FIELDS,
+        properties: {
+          targetText: buildCardFieldSchema({
+            description: `One beginner-friendly ${language.label} word or short phrase in ${targetScript}.`,
+          }),
+          ttsText: buildCardFieldSchema({
+            description: `The exact ${language.label} text Supertonic should speak. It must match targetText unless a clearer spoken form is needed.`,
+          }),
+          translation: buildCardFieldSchema({
+            description: "Short English meaning of targetText.",
+          }),
+          phoneticSpelling: buildCardFieldSchema({
+            description: phoneticDescription,
+          }),
+          example: buildCardFieldSchema({
+            description: `One short beginner example sentence in ${targetScript}.`,
+          }),
+          exampleTranslation: buildCardFieldSchema({
+            description: "Short English meaning of example.",
+          }),
         },
       },
     },
-  },
-};
+  };
+}
 
-const QWEN_RESPONSE_FORMAT = {
-  type: "json_object",
-  schema: JSON.stringify(CARD_SCHEMA),
-};
+function buildQwenResponseFormat(language) {
+  return {
+    type: "json_object",
+    schema: JSON.stringify(buildCardSchema(language)),
+  };
+}
 
 let llmPromise = null;
 let webLlmModulePromise = null;
@@ -108,6 +121,18 @@ function getLanguage(languageCode) {
 
 function getErrorMessage(error) {
   return error instanceof Error ? error.message : String(error);
+}
+
+function isQwenNetworkLoadError(error) {
+  return /Failed to fetch|NetworkError|ERR_NETWORK|Load failed/i.test(getErrorMessage(error));
+}
+
+export function getQwenLoadFailureMessage(error) {
+  if (isQwenNetworkLoadError(error)) {
+    return `Could not download ${QWEN_GENERATION_MODEL_LABEL} model files. Check Hugging Face/network access, then retry.`;
+  }
+
+  return `Could not load ${QWEN_GENERATION_MODEL_LABEL}: ${getErrorMessage(error)}`;
 }
 
 function supportsWebGpu() {
@@ -231,7 +256,12 @@ export async function preloadQwenModel({ onStatus } = {}) {
     }),
   );
 
-  await loadLlm(onStatus);
+  try {
+    await loadLlm(onStatus);
+  } catch (error) {
+    throw new Error(getQwenLoadFailureMessage(error));
+  }
+
   setStoredQwenReadyMarker(true);
 
   const finalStatus = await getQwenCacheStatus();
@@ -305,8 +335,8 @@ async function loadLlm(onStatus) {
       },
       {
         repetition_penalty: 1.05,
-        temperature: 0.2,
-        top_p: 0.8,
+        temperature: 0,
+        top_p: 1,
       },
     );
   })().catch((error) => {
@@ -822,14 +852,14 @@ async function generateRawResponse({ language, llm, onStatus, prompt, statusMess
 
   if (llm?.chat?.completions?.create) {
     const response = await llm.chat.completions.create({
-      max_tokens: 320,
+      max_tokens: 420,
       messages: buildQwenMessages({ language, prompt }),
       model: QWEN_GENERATION_MODEL_ID,
       repetition_penalty: 1.05,
-      response_format: QWEN_RESPONSE_FORMAT,
-      seed: Math.floor(Math.random() * 2147483647),
-      temperature: 0.15,
-      top_p: 0.8,
+      response_format: buildQwenResponseFormat(language),
+      stream: false,
+      temperature: 0,
+      top_p: 1,
     });
 
     return requiredString(response?.choices?.[0]?.message?.content);
@@ -865,7 +895,20 @@ export async function generateLanguageCards({
   }
 
   const startedAt = performance.now();
-  const llm = await loadLlm(onStatus);
+  let llm = null;
+
+  try {
+    llm = await loadLlm(onStatus);
+  } catch (error) {
+    const debug = createGenerationDebug({
+      attempt: 0,
+      expected: buildExpectedCardFormat(language),
+      problem: `${getQwenLoadFailureMessage(error)} Raw error: ${getErrorMessage(error)}`,
+      stage: "model-load-error",
+    });
+
+    throw createGenerationError(getQwenLoadFailureMessage(error), debug);
+  }
 
   return generateLanguageCardsWithLlm({
     count,

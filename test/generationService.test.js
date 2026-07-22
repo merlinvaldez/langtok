@@ -5,6 +5,7 @@ import {
   buildPrompt,
   buildCardsFromRawResponse,
   generateLanguageCardsWithLlm,
+  getQwenLoadFailureMessage,
   parseGeneratedCardResponse,
 } from "../src/generationService.js";
 
@@ -77,6 +78,10 @@ function createFakeLlm(responses) {
       },
     },
   };
+}
+
+function getCardSchemaFromFirstRequest(llm) {
+  return JSON.parse(llm.requests[0].response_format.schema).properties.card;
 }
 
 test("builds a JSON-first prompt contract for WebLLM", () => {
@@ -265,6 +270,77 @@ test("repairs malformed JSON before returning a card", async () => {
   assert.equal(llm.requests[0].response_format.type, "json_object");
   assert.ok(statuses.some((status) => status.message === "Repairing Italian card"));
   assert.ok(statuses.some((status) => status.debug?.problem?.includes("Expected") || status.debug?.problem?.includes("JSON")));
+});
+
+test("uses deterministic WebLLM JSON request settings", async () => {
+  const llm = createFakeLlm([validItalianCardJson("salve")]);
+
+  await generateLanguageCardsWithLlm({
+    existingCards: [],
+    language: italian,
+    llm,
+  });
+
+  assert.equal(llm.requests[0].response_format.type, "json_object");
+  assert.equal(llm.requests[0].stream, false);
+  assert.equal(llm.requests[0].temperature, 0);
+  assert.equal(llm.requests[0].top_p, 1);
+  assert.equal(llm.requests[0].max_tokens, 420);
+  assert.equal("seed" in llm.requests[0], false);
+});
+
+test("sends a conservative Arabic JSON schema to WebLLM", async () => {
+  const llm = createFakeLlm([validArabicCardJson("\u0634\u0643\u0631\u0627")]);
+
+  await generateLanguageCardsWithLlm({
+    existingCards: [],
+    language: arabic,
+    llm,
+  });
+
+  const schema = getCardSchemaFromFirstRequest(llm);
+
+  assert.equal(schema.additionalProperties, false);
+  assert.deepEqual(schema.required, [
+    "targetText",
+    "ttsText",
+    "translation",
+    "phoneticSpelling",
+    "example",
+    "exampleTranslation",
+  ]);
+  assert.equal(schema.properties.targetText.type, "string");
+  assert.equal("minLength" in schema.properties.targetText, false);
+  assert.equal("maxLength" in schema.properties.targetText, false);
+  assert.match(schema.properties.targetText.description, /Arabic script/);
+  assert.match(schema.properties.phoneticSpelling.description, /Never use Arabic script/);
+});
+
+test("does not send Arabic-only phonetic instructions for Latin-language cards", async () => {
+  const llm = createFakeLlm([validItalianCardJson("salve")]);
+
+  await generateLanguageCardsWithLlm({
+    existingCards: [],
+    language: italian,
+    llm,
+  });
+
+  const schema = getCardSchemaFromFirstRequest(llm);
+
+  assert.match(schema.properties.phoneticSpelling.description, /Plain-English phonetic spelling/);
+  assert.doesNotMatch(schema.properties.phoneticSpelling.description, /Arabic script/);
+});
+
+test("explains Qwen network load failures separately from card validation failures", () => {
+  assert.equal(
+    getQwenLoadFailureMessage(new Error("Failed to fetch")),
+    "Could not download Qwen2.5 1.5B model files. Check Hugging Face/network access, then retry.",
+  );
+
+  assert.equal(
+    getQwenLoadFailureMessage(new Error("WebGPU unavailable")),
+    "Could not load Qwen2.5 1.5B: WebGPU unavailable",
+  );
 });
 
 test("repair prompt tells Qwen to replace duplicate Arabic cards and use Latin phonetics", async () => {
